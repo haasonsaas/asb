@@ -64,6 +64,24 @@ func (r *Repository) ListGrantsBySession(_ context.Context, sessionID string) ([
 	return out, nil
 }
 
+func (r *Repository) ListExpiredSessions(_ context.Context, before time.Time, limit int) ([]*core.Session, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]*core.Session, 0)
+	for _, session := range r.sessions {
+		if session.State != core.SessionStateActive || session.ExpiresAt.After(before) {
+			continue
+		}
+		cp := cloneSession(session)
+		out = append(out, &cp)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (r *Repository) SaveGrant(_ context.Context, grant *core.Grant) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -85,6 +103,28 @@ func (r *Repository) GetGrant(_ context.Context, grantID string) (*core.Grant, e
 	return &cp, nil
 }
 
+func (r *Repository) ListExpiredGrants(_ context.Context, before time.Time, limit int) ([]*core.Grant, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]*core.Grant, 0)
+	for _, grant := range r.grants {
+		if grant.ExpiresAt.After(before) {
+			continue
+		}
+		switch grant.State {
+		case core.GrantStateRevoked, core.GrantStateDenied, core.GrantStateExpired:
+			continue
+		}
+		cp := cloneGrant(grant)
+		out = append(out, &cp)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (r *Repository) SaveApproval(_ context.Context, approval *core.Approval) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,8 +142,26 @@ func (r *Repository) GetApproval(_ context.Context, approvalID string) (*core.Ap
 	if !ok {
 		return nil, fmt.Errorf("%w: approval %q", core.ErrNotFound, approvalID)
 	}
-	cp := *approval
+	cp := cloneApproval(approval)
 	return &cp, nil
+}
+
+func (r *Repository) ListExpiredApprovals(_ context.Context, before time.Time, limit int) ([]*core.Approval, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]*core.Approval, 0)
+	for _, approval := range r.approvals {
+		if approval.State != core.ApprovalStatePending || approval.ExpiresAt.After(before) {
+			continue
+		}
+		cp := cloneApproval(approval)
+		out = append(out, &cp)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (r *Repository) SaveArtifact(_ context.Context, artifact *core.Artifact) error {
@@ -168,6 +226,28 @@ func (r *Repository) UseArtifact(_ context.Context, artifactID string, usedAt ti
 	return &cp, nil
 }
 
+func (r *Repository) ListExpiredArtifacts(_ context.Context, before time.Time, limit int) ([]*core.Artifact, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]*core.Artifact, 0)
+	for _, artifact := range r.artifacts {
+		if artifact.ExpiresAt.After(before) {
+			continue
+		}
+		switch artifact.State {
+		case core.ArtifactStateUsed, core.ArtifactStateRevoked, core.ArtifactStateExpired:
+			continue
+		}
+		cp := cloneArtifact(artifact)
+		out = append(out, &cp)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func cloneSession(session *core.Session) core.Session {
 	cp := *session
 	cp.ToolContext = append([]string(nil), session.ToolContext...)
@@ -194,6 +274,15 @@ func cloneGrant(grant *core.Grant) core.Grant {
 	if grant.ArtifactRef != nil {
 		value := *grant.ArtifactRef
 		cp.ArtifactRef = &value
+	}
+	return cp
+}
+
+func cloneApproval(approval *core.Approval) core.Approval {
+	cp := *approval
+	if approval.ApprovedBy != nil {
+		value := *approval.ApprovedBy
+		cp.ApprovedBy = &value
 	}
 	return cp
 }

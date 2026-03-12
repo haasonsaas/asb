@@ -477,14 +477,18 @@ type Repository interface {
 	SaveSession(ctx context.Context, session *Session) error
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	ListGrantsBySession(ctx context.Context, sessionID string) ([]*Grant, error)
+	ListExpiredSessions(ctx context.Context, before time.Time, limit int) ([]*Session, error)
 	SaveGrant(ctx context.Context, grant *Grant) error
 	GetGrant(ctx context.Context, grantID string) (*Grant, error)
+	ListExpiredGrants(ctx context.Context, before time.Time, limit int) ([]*Grant, error)
 	SaveApproval(ctx context.Context, approval *Approval) error
 	GetApproval(ctx context.Context, approvalID string) (*Approval, error)
+	ListExpiredApprovals(ctx context.Context, before time.Time, limit int) ([]*Approval, error)
 	SaveArtifact(ctx context.Context, artifact *Artifact) error
 	GetArtifact(ctx context.Context, artifactID string) (*Artifact, error)
 	GetArtifactByHandle(ctx context.Context, handle string) (*Artifact, error)
 	UseArtifact(ctx context.Context, artifactID string, usedAt time.Time) (*Artifact, error)
+	ListExpiredArtifacts(ctx context.Context, before time.Time, limit int) ([]*Artifact, error)
 }
 
 type SessionTokenManager interface {

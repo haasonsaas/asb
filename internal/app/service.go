@@ -391,27 +391,7 @@ func (s *Service) RevokeGrant(ctx context.Context, req *core.RevokeGrantRequest)
 	if err != nil {
 		return err
 	}
-	var artifact *core.Artifact
-	if grant.ArtifactRef != nil {
-		artifact, err = s.repo.GetArtifact(ctx, *grant.ArtifactRef)
-		if err != nil {
-			return err
-		}
-	}
-	connector, err := s.connectors.Resolve(ctx, grant.Capability, grant.ResourceRef)
-	if err != nil {
-		return err
-	}
-	if err := connector.Revoke(ctx, core.RevokeRequest{
-		Session:  session,
-		Grant:    grant,
-		Artifact: artifact,
-		Reason:   req.Reason,
-	}); err != nil {
-		return err
-	}
-	grant.State = core.GrantStateRevoked
-	return s.repo.SaveGrant(ctx, grant)
+	return s.transitionGrantState(ctx, session, grant, core.GrantStateRevoked, req.Reason)
 }
 
 func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequest) error {
@@ -437,27 +417,7 @@ func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequ
 			continue
 		}
 
-		var artifact *core.Artifact
-		if grant.ArtifactRef != nil {
-			artifact, err = s.repo.GetArtifact(ctx, *grant.ArtifactRef)
-			if err != nil {
-				return err
-			}
-		}
-		connector, err := s.connectors.Resolve(ctx, grant.Capability, grant.ResourceRef)
-		if err != nil {
-			return err
-		}
-		if err := connector.Revoke(ctx, core.RevokeRequest{
-			Session:  session,
-			Grant:    grant,
-			Artifact: artifact,
-			Reason:   req.Reason,
-		}); err != nil {
-			return err
-		}
-		grant.State = core.GrantStateRevoked
-		if err := s.repo.SaveGrant(ctx, grant); err != nil {
+		if err := s.transitionGrantState(ctx, session, grant, core.GrantStateRevoked, req.Reason); err != nil {
 			return err
 		}
 	}

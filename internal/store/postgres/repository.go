@@ -158,6 +158,34 @@ func (r *Repository) ListGrantsBySession(ctx context.Context, sessionID string) 
 	return grants, rows.Err()
 }
 
+func (r *Repository) ListExpiredSessions(ctx context.Context, before time.Time, limit int) ([]*core.Session, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id
+		FROM sessions
+		WHERE state = 'active' AND expires_at <= $1
+		ORDER BY expires_at ASC
+		LIMIT $2
+	`, before, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*core.Session
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return nil, err
+		}
+		session, err := r.GetSession(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
 func (r *Repository) SaveGrant(ctx context.Context, grant *core.Grant) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO grants (id, tenant_id, session_id, tool, capability, resource_ref, delivery_mode, connector_kind, approval_id, artifact_ref, state, requested_ttl_seconds, effective_ttl_seconds, expires_at, created_at, reason)
@@ -187,6 +215,30 @@ func (r *Repository) GetGrant(ctx context.Context, grantID string) (*core.Grant,
 		return nil, err
 	}
 	return grant, nil
+}
+
+func (r *Repository) ListExpiredGrants(ctx context.Context, before time.Time, limit int) ([]*core.Grant, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, tenant_id, session_id, tool, capability, resource_ref, delivery_mode, connector_kind, approval_id, artifact_ref, state, requested_ttl_seconds, effective_ttl_seconds, expires_at, created_at, reason
+		FROM grants
+		WHERE expires_at <= $1 AND state NOT IN ('revoked', 'denied', 'expired')
+		ORDER BY expires_at ASC
+		LIMIT $2
+	`, before, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var grants []*core.Grant
+	for rows.Next() {
+		grant, err := scanGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, grant)
+	}
+	return grants, rows.Err()
 }
 
 func (r *Repository) SaveApproval(ctx context.Context, approval *core.Approval) error {
@@ -222,6 +274,30 @@ func (r *Repository) GetApproval(ctx context.Context, approvalID string) (*core.
 	}
 	approval.ApprovedBy = approvedBy
 	return &approval, nil
+}
+
+func (r *Repository) ListExpiredApprovals(ctx context.Context, before time.Time, limit int) ([]*core.Approval, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, tenant_id, grant_id, requested_by, approved_by, reason, comment, state, expires_at, created_at
+		FROM approvals
+		WHERE state = 'pending' AND expires_at <= $1
+		ORDER BY expires_at ASC
+		LIMIT $2
+	`, before, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var approvals []*core.Approval
+	for rows.Next() {
+		approval, err := scanApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		approvals = append(approvals, approval)
+	}
+	return approvals, rows.Err()
 }
 
 func (r *Repository) SaveArtifact(ctx context.Context, artifact *core.Artifact) error {
@@ -302,6 +378,30 @@ func (r *Repository) UseArtifact(ctx context.Context, artifactID string, usedAt 
 	return artifact, nil
 }
 
+func (r *Repository) ListExpiredArtifacts(ctx context.Context, before time.Time, limit int) ([]*core.Artifact, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, tenant_id, session_id, grant_id, handle, kind, connector_kind, ciphertext, metadata_json, recipient_binding_json, single_use, state, expires_at, created_at, used_at
+		FROM artifacts
+		WHERE expires_at <= $1 AND state NOT IN ('used', 'revoked', 'expired')
+		ORDER BY expires_at ASC
+		LIMIT $2
+	`, before, normalizeLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var artifacts []*core.Artifact
+	for rows.Next() {
+		artifact, err := scanArtifact(rows)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
+}
+
 func scanGrant(row interface{ Scan(dest ...any) error }) (*core.Grant, error) {
 	var (
 		grant            core.Grant
@@ -366,6 +466,23 @@ func scanArtifact(row interface{ Scan(dest ...any) error }) (*core.Artifact, err
 	return &artifact, nil
 }
 
+func scanApproval(row interface{ Scan(dest ...any) error }) (*core.Approval, error) {
+	var (
+		approval   core.Approval
+		approvedBy *string
+		state      string
+	)
+	err := row.Scan(
+		&approval.ID, &approval.TenantID, &approval.GrantID, &approval.RequestedBy, &approvedBy, &approval.Reason, &approval.Comment, &state, &approval.ExpiresAt, &approval.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	approval.State = core.ApprovalState(state)
+	approval.ApprovedBy = approvedBy
+	return &approval, nil
+}
+
 func parseWorkloadIdentity(identityType string, subject string, issuer string, metadataJSON []byte) core.WorkloadIdentity {
 	var metadata struct {
 		Audience       string            `json:"audience"`
@@ -411,4 +528,11 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func normalizeLimit(limit int) int {
+	if limit <= 0 {
+		return 100
+	}
+	return limit
 }
