@@ -1,8 +1,9 @@
 # ASB
 
-ASB is an agents-first secret broker and control plane written in Go.
+ASB is an agents-first secret broker written in Go.
 
-It is not a generic secret-path reader. Instead, it binds secret access to:
+It does not treat secret access as "read a path and hand back a credential."
+Instead, it turns secret access into a scoped, auditable execution decision tied to:
 
 - an attested workload
 - a single agent run
@@ -11,46 +12,173 @@ It is not a generic secret-path reader. Instead, it binds secret access to:
 - an explicit resource
 - a short-lived delivery mode
 
-The current codebase implements a runnable v1 broker baseline from the consolidated spec:
+ASB exists for cases where an agent should not receive broad standing credentials, and where access must be constrained to a specific operation, runtime, and approval path.
 
-- session creation from Kubernetes projected service account JWTs
-- signed internal session tokens
-- signed delegation validation
-- policy evaluation and tool trust checks
-- grant issuance and approval gating
-- GitHub proxy handle issuance, downstream proxy execution, and GitHub App token exchange
-- Vault-backed Postgres dynamic credential brokering
-- browser relay registration and single-use unwrap/fill responses
+The current repository is a working v1 implementation baseline. It can create attested sessions, issue narrow grants, mediate downstream access through proxy or wrapped-artifact delivery, and persist runtime state across in-memory, Postgres, and Redis-backed components.
+
+It is not yet a full production deployment.
+
+## What makes ASB different
+
+Traditional secret systems answer:
+> "Can this principal read this secret?"
+
+ASB answers:
+> "Can this specific agent run, using this specific trusted tool, perform this specific action on this specific resource right now, and how should that access be delivered?"
+
+ASB is not a generic secret-path reader and does not hand broad credentials directly to agents. It is a policy and delivery system for agent-execution-bound access.
+
+## Core control model
+
+ASB has three core jobs:
+
+1. **Authenticate the workload and bind a session to a single agent run.**
+   Sessions are created from Kubernetes projected service account JWTs. The broker verifies the token, normalizes a workload identity, and issues an Ed25519-signed internal session token bound to `tenant_id`, `agent_id`, `run_id`, `tool_context`, and `workload_hash`.
+
+2. **Authorize a narrow grant for a specific tool, capability, resource, and delivery mode.**
+   The service enforces capability-policy lookup, tool registry and trust-tag checks, delivery-mode allowlists, TTL clamping, delegation resource filters, and approval gating for high-risk flows. Grants are never broader than the intersection of policy, delegation, and tool trust.
+
+3. **Mediate downstream access through proxy execution or wrapped artifacts.**
+   The broker either executes the downstream call itself (proxy mode, where the agent only receives an opaque handle) or returns a short-lived, single-use artifact reference for trusted runtimes (wrapped-secret mode). The agent never touches the raw credential in the proxy path.
+
+## Why ASB exists
+
+Most infrastructure already has a secret store. The gap is not storage — it is mediation.
+
+Vault answers "who can read this path." SPIFFE/SPIRE answers "what is this workload's identity." GitHub App tokens answer "what can this installation do." None of them answer "should this specific agent run, using this specific trusted tool, be allowed to perform this specific action on this specific resource right now, and how should that access be delivered?"
+
+ASB sits between the agent and the downstream system. It binds access to agent execution context, not just identity. It constrains delivery mode, operation scope, and runtime budget. It makes secret access an auditable execution decision rather than a credential lookup.
+
+## Current capabilities
+
+ASB currently supports:
+
+- workload-attested session creation from Kubernetes projected service account JWTs
+- signed internal session tokens (Ed25519) for broker-authenticated follow-on requests
+- signed delegation validation with per-capability resource filtering
+- narrow grant issuance with policy checks, tool trust checks, TTL clamping, and approval gating
+- GitHub proxy access through allowlisted operations, including GitHub App installation-token exchange
+- Vault-backed dynamic Postgres credential brokering delivered as wrapped artifacts
+- browser relay registration with single-use unwrap responses and selector-bound fill data
 - JSON/HTTP and ConnectRPC transports
-- in-memory, Postgres, and Redis-backed runtime/storage components
+- in-memory, Postgres, and Redis-backed storage and runtime components
 - migration and cleanup worker binaries
-- GitHub Actions CI
+- CI and service-level test coverage across the major flows
 
-## Status
+### Intentionally simplified in v1
 
-This repository is a working implementation baseline, not a finished production deployment.
-
-What is implemented:
-
-- `CreateSession`, `RequestGrant`, `ApproveGrant`, `DenyGrant`, `RevokeGrant`, `RevokeSession`
-- `/v1/proxy/github/rest`
-- browser relay registration and artifact unwrap APIs
-- ConnectRPC service definitions and generated stubs
-- GitHub HTTP proxy executor with static-token and GitHub App auth support
-- Vault HTTP client and DB connector
-- browser connector with selector-map-based fill data
-- Postgres repository and Redis runtime-state store
-- schema migration runner and worker cleanup loop
-- GitHub Actions CI for formatting, proto regeneration, vet, and tests
-- unit and service-level tests across the major flows
-
-What is still intentionally lightweight:
-
-- no full production approval callback transport yet
-- no KMS-backed artifact encryption yet
+- no full production approval callback transport yet (approvals work, but notification is in-process only)
+- no KMS-backed artifact encryption yet (artifacts are stored, but not envelope-encrypted at rest)
 - no frontend admin UI or browser extension package in this repo yet
+- minted-token delivery is modeled in the domain but not enabled in runtime wiring
 
-## Repository Layout
+### Required before production
+
+- artifact encryption at rest with KMS-backed envelopes
+- signed approval callbacks with replay protection
+- hardened key management and rotation for session signing and delegation verification
+- HA deployment guidance and failure-mode testing
+- connector-specific security review and operational limits
+- end-to-end audit pipeline durability guarantees
+- browser extension packaging and distribution
+
+## Threat model assumptions
+
+- workloads are authenticated through projected Kubernetes service account JWTs
+- trusted tools are registered and policy-checked before grants can be issued
+- grants are narrow in scope and short in lifetime
+- wrapped artifacts are intended for trusted runtimes only
+- downstream access should be revocable on session or grant expiry
+- proxy execution is operation-allowlisted and budget-constrained
+- ASB reduces standing credential exposure, but does not make a compromised trusted runtime harmless
+
+## Connectors
+
+### GitHub
+
+The GitHub connector does not hand the agent a token. It issues an opaque proxy handle, and the broker executes allowlisted GitHub API operations on behalf of the agent.
+
+The handle encodes operation scope and is validated by the broker on every use. Per-handle runtime budgets (max concurrent requests, max total requests, max bytes) are enforced in-memory or via Redis.
+
+Implemented allowlisted operations:
+
+- `pull_request_metadata`
+- `pull_request_files`
+- `repository_metadata`
+- `repository_issues`
+
+The executor supports two token sources: a static token for development, or a GitHub App installation-token flow that caches repo-to-installation mappings and mints repo-scoped tokens with minimal permissions (`contents:read`, `issues:read`, `pull_requests:read`).
+
+### Vault DB
+
+The Vault DB connector brokers short-lived Postgres credentials through HashiCorp Vault's database secrets engine.
+
+- validates read-only roles (role names must end with `_ro` — this is static config, enforced by the connector)
+- fetches dynamic credentials from Vault
+- renders a DSN from a configured template
+- returns wrapped-secret artifacts with the Vault lease ID in metadata for revocation tracking
+- revokes Vault leases when grants or sessions are revoked
+
+### Browser
+
+The browser connector returns wrapped credential artifacts with explicit field-level fill instructions.
+
+- validates exact origin URLs
+- requires a selector map per origin (CSS selectors for each credential field)
+- unwrap returns explicit field selector/value pairs only — the broker never returns a general browser credential blob
+- single-use unwrap enforced at the artifact level
+- never auto-submits
+
+### Connector resolution
+
+A static resolver routes capability and resource kind to the appropriate connector. Each connector validates its own resource descriptors independently.
+
+## Delivery modes
+
+- **`proxy`**: the broker executes the downstream call and the agent only receives an opaque handle. The agent never sees the credential. Budget-enforced per handle.
+- **`wrapped_secret`**: the broker returns a short-lived, single-use artifact reference for trusted runtimes. The artifact is bound to recipient identity (session, key, origin, tab).
+- **`minted_token`** *(planned, not runtime-enabled)*: direct short-lived token issuance for cases where proxy is impractical. Modeled in the domain types but not wired into delivery adapters.
+
+## Storage
+
+### Postgres
+
+Primary persistence for sessions, grants, approvals, artifacts, and audit events. If `ASB_POSTGRES_DSN` is set, `cmd/asb-api` uses the Postgres repository. Schema managed via `cmd/asb-migrate`.
+
+### Redis
+
+Runtime state only, not source-of-truth persistence. Used for proxy handle budgets and browser relay session state when `ASB_REDIS_ADDR` is set. Keys are set with automatic expiry. Watch-based transactions enforce concurrent budget limits. No durability guarantees — state is reconstructable from Postgres.
+
+### In-memory
+
+Default for local development when no persistence env vars are provided. Thread-safe via `sync.RWMutex`. Full repository interface with deep cloning on read/write.
+
+## Transports
+
+Two transports are exposed by `cmd/asb-api`:
+
+- JSON/HTTP under `/v1/...`
+- ConnectRPC under `/asb.v1.BrokerService/...`
+
+### JSON endpoints
+
+```
+POST /v1/sessions                          CreateSession
+POST /v1/grants                            RequestGrant
+POST /v1/approvals/{approval_id}:approve   ApproveGrant
+POST /v1/approvals/{approval_id}:deny      DenyGrant
+POST /v1/grants/{grant_id}:revoke          RevokeGrant
+POST /v1/sessions/{session_id}:revoke      RevokeSession
+POST /v1/proxy/github/rest                 ExecuteGitHubProxy
+POST /v1/browser/relay-sessions            RegisterBrowserRelay
+POST /v1/artifacts/{artifact_id}:unwrap    UnwrapArtifact
+```
+
+### ConnectRPC
+
+See `proto/asb/v1/broker.proto` for the complete API contract.
+
+## Repository layout
 
 ```text
 cmd/
@@ -78,187 +206,68 @@ proto/
   asb/v1/               Proto and generated code
 ```
 
-## Core Concepts
-
-### Sessions
-
-Sessions are created from workload attestation and become the root identity for a run.
-
-The current implementation:
-
-- verifies Kubernetes projected SA JWTs
-- normalizes workload identity
-- creates a persisted session record
-- issues an Ed25519-signed internal session token
-- binds session decisions to `tenant_id`, `agent_id`, `run_id`, `tool_context`, and `workload_hash`
-
-### Grants
-
-Grants are narrow authorizations for one capability, one resource, one delivery mode, and one tool.
-
-The service enforces:
-
-- capability-policy lookup
-- tool registry checks
-- delivery-mode allowlists
-- TTL clamping
-- delegation resource filters
-- approval gating for high-risk flows
-
-### Delivery Modes
-
-- `proxy`: the broker executes the downstream call and the agent only receives a handle
-- `wrapped_secret`: the broker returns a short-lived artifact reference for trusted runtimes
-
-Minted tokens remain modeled in the domain, but are not enabled in the runtime wiring yet.
-
-## Transports
-
-Two transports are exposed by `cmd/asb-api`:
-
-- JSON/HTTP under `/v1/...`
-- ConnectRPC under `/asb.v1.BrokerService/...`
-
-### JSON Endpoints
-
-- `POST /v1/sessions`
-- `POST /v1/grants`
-- `POST /v1/approvals/{approval_id}:approve`
-- `POST /v1/approvals/{approval_id}:deny`
-- `POST /v1/grants/{grant_id}:revoke`
-- `POST /v1/sessions/{session_id}:revoke`
-- `POST /v1/proxy/github/rest`
-- `POST /v1/browser/relay-sessions`
-- `POST /v1/artifacts/{artifact_id}:unwrap`
-
-### ConnectRPC Methods
-
-See `proto/asb/v1/broker.proto` for the complete API contract.
-
-## Connectors
-
-### GitHub
-
-The GitHub connector issues proxy handles only, and the executor supports either a static token or a GitHub App installation-token flow.
-
-Implemented allowlisted operations:
-
-- `pull_request_metadata`
-- `pull_request_files`
-- `repository_metadata`
-- `repository_issues`
-
-The executor clamps pagination, looks up or mints repo-scoped access tokens, and relies on per-handle runtime budgets stored in memory or Redis.
-
-### Vault DB
-
-The Vault DB connector:
-
-- validates read-only roles
-- fetches dynamic credentials from Vault
-- renders a DSN from a configured template
-- returns wrapped-secret artifacts
-- revokes Vault leases when grants or sessions are revoked
-
-### Browser
-
-The browser connector:
-
-- validates exact origins
-- requires selector maps per origin
-- returns wrapped browser credential artifacts
-- feeds unwrap responses that contain explicit field selector/value pairs
-- never auto-submits
-
-## Storage
-
-### In-Memory
-
-Default for local development when no persistence env vars are provided.
-
-### Postgres
-
-If `ASB_POSTGRES_DSN` is set, `cmd/asb-api` uses the Postgres repository implementation.
-
-Schema changes are applied with `cmd/asb-migrate`.
-
-Current migration files:
-
-- `db/migrations/0001_init.sql`
-
-### Redis
-
-If `ASB_REDIS_ADDR` is set, `cmd/asb-api` uses the Redis runtime-state store for:
-
-- proxy handle budgets
-- browser relay session state
-
 ## Worker
 
-`cmd/asb-worker` runs cleanup passes over expired approvals, grants, sessions, and artifacts.
-
-The current worker:
+`cmd/asb-worker` runs periodic cleanup passes over expired state:
 
 - expires stale approval records
 - expires grants on TTL and session expiry
-- triggers downstream revoke best effort for expiring grants
-- marks artifacts expired or revoked as state changes happen
+- triggers downstream connector revocation (best-effort) for expiring grants
+- marks artifacts expired or revoked as state changes propagate
+
+Flags: `-interval` (default 30s), `-limit` (default 100 per pass), `-once` (single run then exit).
 
 ## Configuration
 
-### Required for API Startup
+### Required for API startup
 
-- `ASB_K8S_ISSUER`
-- `ASB_K8S_PUBLIC_KEY_FILE`
+| Variable | Purpose |
+|----------|---------|
+| `ASB_K8S_ISSUER` | Expected issuer in Kubernetes SA JWTs |
+| `ASB_K8S_PUBLIC_KEY_FILE` | Public key for JWT verification |
 
 ### Optional
 
-- `ASB_K8S_AUDIENCE`
-- `ASB_ADDR`
-- `ASB_DEV_TENANT_ID`
-- `ASB_POSTGRES_DSN`
-- `ASB_REDIS_ADDR`
-- `ASB_REDIS_PASSWORD`
-- `ASB_GITHUB_TOKEN`
-- `ASB_GITHUB_API_BASE_URL`
-- `ASB_GITHUB_APP_ID`
-- `ASB_GITHUB_APP_PRIVATE_KEY_FILE`
-- `ASB_GITHUB_APP_PERMISSIONS_JSON`
-- `ASB_DELEGATION_ISSUER`
-- `ASB_DELEGATION_PUBLIC_KEY_FILE`
-- `ASB_SESSION_SIGNING_PRIVATE_KEY_FILE`
+| Variable | Purpose |
+|----------|---------|
+| `ASB_K8S_AUDIENCE` | Expected audience claim |
+| `ASB_ADDR` | Listen address (default `:8080`) |
+| `ASB_DEV_TENANT_ID` | Tenant ID for local development |
+| `ASB_POSTGRES_DSN` | Enables Postgres repository |
+| `ASB_REDIS_ADDR` | Enables Redis runtime store |
+| `ASB_REDIS_PASSWORD` | Redis authentication |
+| `ASB_GITHUB_TOKEN` | Static GitHub token (dev) |
+| `ASB_GITHUB_API_BASE_URL` | GitHub API base URL override |
+| `ASB_GITHUB_APP_ID` | GitHub App ID |
+| `ASB_GITHUB_APP_PRIVATE_KEY_FILE` | GitHub App private key |
+| `ASB_GITHUB_APP_PERMISSIONS_JSON` | GitHub App token permissions |
+| `ASB_DELEGATION_ISSUER` | Delegation JWT issuer |
+| `ASB_DELEGATION_PUBLIC_KEY_FILE` | Delegation JWT public key |
+| `ASB_SESSION_SIGNING_PRIVATE_KEY_FILE` | Ed25519 private key for session tokens |
+| `ASB_VAULT_ADDR` | Vault server address |
+| `ASB_VAULT_TOKEN` | Vault authentication token |
+| `ASB_VAULT_NAMESPACE` | Vault namespace |
+| `ASB_VAULT_ROLE` | Vault DB role name |
+| `ASB_VAULT_DSN_TEMPLATE` | DSN template for rendered credentials |
+| `ASB_BROWSER_ORIGIN` | Allowed browser origin (demo) |
+| `ASB_BROWSER_USERNAME` | Browser credential username (demo) |
+| `ASB_BROWSER_PASSWORD` | Browser credential password (demo) |
+| `ASB_BROWSER_SELECTOR_USERNAME` | CSS selector for username field (demo) |
+| `ASB_BROWSER_SELECTOR_PASSWORD` | CSS selector for password field (demo) |
 
-### Optional Browser Demo Config
-
-- `ASB_BROWSER_ORIGIN`
-- `ASB_BROWSER_USERNAME`
-- `ASB_BROWSER_PASSWORD`
-- `ASB_BROWSER_SELECTOR_USERNAME`
-- `ASB_BROWSER_SELECTOR_PASSWORD`
-
-### Optional Vault Demo Config
-
-- `ASB_VAULT_ADDR`
-- `ASB_VAULT_TOKEN`
-- `ASB_VAULT_NAMESPACE`
-- `ASB_VAULT_ROLE`
-- `ASB_VAULT_DSN_TEMPLATE`
-
-## Local Development
-
-### Commands
+## Local development
 
 ```bash
-make proto
-make fmt
-make vet
-make test
-make migrate
-make run-api
-make run-worker
+make proto         # regenerate protobuf/ConnectRPC stubs
+make fmt           # format Go source
+make vet           # go vet
+make test          # run all tests
+make migrate       # apply Postgres schema (requires ASB_POSTGRES_DSN)
+make run-api       # start the API server
+make run-worker    # start the cleanup worker
 ```
 
-### Example Startup
+### Example startup
 
 ```bash
 export ASB_K8S_ISSUER="https://cluster.example"
@@ -267,7 +276,7 @@ export ASB_GITHUB_TOKEN="ghp_..."
 make run-api
 ```
 
-### Health Check
+### Health check
 
 ```bash
 curl http://localhost:8080/healthz
@@ -275,48 +284,30 @@ curl http://localhost:8080/healthz
 
 ## Testing
 
-The project is developed test-first around the critical broker behavior:
+Test-first development across the critical broker behavior:
 
-- attestation validation
-- signed delegation validation
-- GitHub App token issuance and caching
-- policy evaluation
-- grant approval and issuance
-- session and grant revocation
-- cleanup worker expiry handling
-- GitHub proxy execution
-- browser relay registration and unwrap
-- Vault credential issue and revoke
+- attestation and signed delegation validation
+- policy evaluation with conditions, trust tags, and TTL clamping
+- grant approval, issuance, and revocation flows
+- GitHub App token generation, caching, and proxy execution with budget enforcement
+- browser relay registration and single-use unwrap
+- Vault credential brokering and lease revocation
 - Postgres repository persistence
 - Redis runtime budget and relay state
-- JSON/HTTP and ConnectRPC adapters
-
-Run everything with:
+- JSON/HTTP and ConnectRPC transport adapters
+- cleanup worker expiry handling
 
 ```bash
 make test
 ```
 
-CI runs the same core checks on GitHub:
+## Security properties
 
-- `make fmt`
-- `make proto`
-- `go vet ./...`
-- `make test`
-
-## Security Notes
-
-- session tokens are short-lived and signed with Ed25519
-- browser unwrap is single-use
-- browser fill responses are explicit and selector-bound
-- GitHub proxy execution is operation-allowlisted
-- proxy runtime budgets are enforced per handle
-- grant decisions are tied to trusted tools and explicit resources
-- audit events are emitted from the service layer
-
-## Next Steps
-
-- encrypt wrapped artifacts at rest with KMS-backed envelopes
-- add approval callback signing and replay protection
-- ship a browser extension package for the relay runtime
-- add stronger runtime binding for future minted-token delivery
+- session tokens are short-lived and Ed25519-signed
+- grants are bound to a single tool, capability, resource, and delivery mode
+- proxy execution is operation-allowlisted with per-handle budget enforcement
+- browser unwrap is single-use and recipient-bound (session, key, origin, tab)
+- browser fill responses are explicit selector/value pairs, never credential blobs
+- GitHub proxy never exposes the underlying token to the agent
+- wrapped artifacts track downstream lease IDs for revocation on expiry
+- audit events are emitted from the service layer for all grant and session lifecycle transitions
