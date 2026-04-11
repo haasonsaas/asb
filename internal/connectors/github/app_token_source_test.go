@@ -20,7 +20,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 
 	installationLookups := 0
 	tokenRequests := 0
@@ -37,7 +37,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 			_, _ = w.Write([]byte(`{"id":987}`))
 		case "/app/installations/987/access_tokens":
 			tokenRequests++
-			_, _ = w.Write([]byte(`{"token":"inst-token","expires_at":"2026-03-12T20:10:00Z"}`))
+			_, _ = w.Write([]byte(`{"token":"inst-token","expires_at":"` + now.Add(10*time.Minute).Format(time.RFC3339) + `"}`))
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}

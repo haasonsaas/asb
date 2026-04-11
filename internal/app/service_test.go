@@ -20,7 +20,7 @@ func TestService_CreateSessionAndIssueProxyGrant(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := testNow()
 	repo := memstore.NewRepository()
 	auditSink := memory.NewSink()
 	tools := toolregistry.New()
@@ -146,7 +146,7 @@ func TestService_BrowserGrantRequiresApprovalBeforeIssue(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := testNow()
 	repo := memstore.NewRepository()
 	auditSink := memory.NewSink()
 	tools := toolregistry.New()
@@ -269,7 +269,7 @@ func TestService_RevokeSessionRevokesOutstandingGrants(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := testNow()
 	repo := memstore.NewRepository()
 	tools := toolregistry.New()
 	engine := policy.NewEngine()
@@ -388,6 +388,10 @@ func mustNewSigner(t *testing.T) core.SessionTokenManager {
 	}
 
 	return signer
+}
+
+func testNow() time.Time {
+	return time.Now().UTC().Truncate(time.Second)
 }
 
 func mustPutTool(t *testing.T, ctx context.Context, registry *toolregistry.Registry, tool core.Tool) {

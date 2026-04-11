@@ -19,7 +19,7 @@ func TestService_ExecuteGitHubProxy(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := testNow()
 	repo := memstore.NewRepository()
 	runtime := memstore.NewRuntimeStore()
 	tools := toolregistry.New()
@@ -135,7 +135,7 @@ func TestService_RegisterBrowserRelayAndUnwrapArtifact(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	now := time.Date(2026, 3, 12, 20, 0, 0, 0, time.UTC)
+	now := testNow()
 	repo := memstore.NewRepository()
 	runtime := memstore.NewRuntimeStore()
 	tools := toolregistry.New()
