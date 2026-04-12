@@ -72,7 +72,7 @@ func (s *server) RequestGrant(ctx context.Context, req *connect.Request[asbv1.Re
 	return connect.NewResponse(toProtoGrantResponse(resp)), nil
 }
 
-func (s *server) ApproveGrant(ctx context.Context, req *connect.Request[asbv1.ApproveGrantRequest]) (*connect.Response[asbv1.RequestGrantResponse], error) {
+func (s *server) ApproveGrant(ctx context.Context, req *connect.Request[asbv1.ApproveGrantRequest]) (*connect.Response[asbv1.ApproveGrantResponse], error) {
 	resp, err := s.service.ApproveGrant(ctx, &core.ApproveGrantRequest{
 		ApprovalID: req.Msg.GetApprovalId(),
 		Approver:   req.Msg.GetApprover(),
@@ -81,7 +81,7 @@ func (s *server) ApproveGrant(ctx context.Context, req *connect.Request[asbv1.Ap
 	if err != nil {
 		return nil, connectError(err)
 	}
-	return connect.NewResponse(toProtoGrantResponse(resp)), nil
+	return connect.NewResponse(toProtoApproveGrantResponse(resp)), nil
 }
 
 func (s *server) DenyGrant(ctx context.Context, req *connect.Request[asbv1.DenyGrantRequest]) (*connect.Response[asbv1.DenyGrantResponse], error) {
@@ -191,6 +191,25 @@ func toProtoGrantResponse(resp *core.RequestGrantResponse) *asbv1.RequestGrantRe
 		}
 	}
 	return &asbv1.RequestGrantResponse{
+		GrantId:    resp.GrantID,
+		State:      string(resp.State),
+		ApprovalId: resp.ApprovalID,
+		Delivery:   delivery,
+		ExpiresAt:  timestamppb.New(resp.ExpiresAt),
+	}
+}
+
+func toProtoApproveGrantResponse(resp *core.RequestGrantResponse) *asbv1.ApproveGrantResponse {
+	var delivery *asbv1.Delivery
+	if resp.Delivery != nil {
+		delivery = &asbv1.Delivery{
+			Kind:       string(resp.Delivery.Kind),
+			Handle:     resp.Delivery.Handle,
+			Token:      resp.Delivery.Token,
+			ArtifactId: resp.Delivery.ArtifactID,
+		}
+	}
+	return &asbv1.ApproveGrantResponse{
 		GrantId:    resp.GrantID,
 		State:      string(resp.State),
 		ApprovalId: resp.ApprovalID,

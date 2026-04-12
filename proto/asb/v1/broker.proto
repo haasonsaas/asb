@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 service BrokerService {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc RequestGrant(RequestGrantRequest) returns (RequestGrantResponse);
-  rpc ApproveGrant(ApproveGrantRequest) returns (RequestGrantResponse);
+  rpc ApproveGrant(ApproveGrantRequest) returns (ApproveGrantResponse);
   rpc DenyGrant(DenyGrantRequest) returns (DenyGrantResponse);
   rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
   rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
@@ -74,6 +74,14 @@ message ApproveGrantRequest {
   string approval_id = 1;
   string approver = 2;
   string comment = 3;
+}
+
+message ApproveGrantResponse {
+  string grant_id = 1;
+  string state = 2;
+  string approval_id = 3;
+  Delivery delivery = 4;
+  google.protobuf.Timestamp expires_at = 5;
 }
 
 message DenyGrantRequest {
