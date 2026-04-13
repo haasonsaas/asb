@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
@@ -20,6 +21,7 @@ const (
 )
 
 type Config struct {
+	Logger              *slog.Logger
 	Clock               core.Clock
 	IDs                 core.IDGenerator
 	Repository          core.Repository
@@ -37,6 +39,7 @@ type Config struct {
 }
 
 type Service struct {
+	logger              *slog.Logger
 	clock               core.Clock
 	ids                 core.IDGenerator
 	repo                core.Repository
@@ -54,6 +57,9 @@ type Service struct {
 }
 
 func NewService(cfg Config) (*Service, error) {
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
 	if cfg.Clock == nil {
 		cfg.Clock = systemClock{}
 	}
@@ -68,6 +74,7 @@ func NewService(cfg Config) (*Service, error) {
 	}
 
 	return &Service{
+		logger:              cfg.Logger,
 		clock:               cfg.Clock,
 		ids:                 cfg.IDs,
 		repo:                cfg.Repository,
@@ -92,7 +99,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 
 	workload, err := s.verifier.Verify(ctx, req.Attestation)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create session for agent %q run %q: verify attestation: %w", req.AgentID, req.RunID, err)
 	}
 
 	var delegation *core.Delegation
@@ -102,7 +109,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 		}
 		delegation, err = s.delegationValidator.Validate(ctx, req.DelegationAssertion, req.TenantID, req.AgentID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create session for agent %q run %q: validate delegation: %w", req.AgentID, req.RunID, err)
 		}
 	}
 
@@ -121,7 +128,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 		CreatedAt:        now,
 	}
 	if err := s.repo.SaveSession(ctx, session); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create session %q: save session: %w", session.ID, err)
 	}
 
 	if delegation != nil {
@@ -147,7 +154,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 
 	token, err := s.sessionTokens.Sign(session)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create session %q: sign session token: %w", session.ID, err)
 	}
 
 	return &core.CreateSessionResponse{
@@ -163,33 +170,33 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 	}
 	session, claims, err := s.loadActiveSession(ctx, req.SessionToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for tool %q capability %q: load active session: %w", req.Tool, req.Capability, err)
 	}
 
 	resource, err := core.ParseResource(req.ResourceRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: parse resource %q: %w", session.ID, req.ResourceRef, err)
 	}
 
 	if err := s.ensureDelegationAllows(session, req, resource); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: validate delegation for resource %q: %w", session.ID, req.ResourceRef, err)
 	}
 
 	tool, err := s.tools.Get(ctx, claims.TenantID, req.Tool)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: load tool %q: %w", session.ID, req.Tool, err)
 	}
 
 	connector, err := s.connectors.Resolve(ctx, req.Capability, req.ResourceRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: resolve connector for capability %q resource %q: %w", session.ID, req.Capability, req.ResourceRef, err)
 	}
 	if err := connector.ValidateResource(ctx, core.ValidateResourceRequest{
 		TenantID:    session.TenantID,
 		Capability:  req.Capability,
 		ResourceRef: req.ResourceRef,
 	}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: validate resource %q: %w", session.ID, req.ResourceRef, err)
 	}
 
 	decision, err := s.policy.Evaluate(ctx, &core.DecisionInput{
@@ -199,7 +206,7 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 		Resource: resource,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request grant for session %q: evaluate policy for capability %q: %w", session.ID, req.Capability, err)
 	}
 	if !decision.Allowed {
 		return nil, fmt.Errorf("%w: %s", core.ErrForbidden, decision.Reason)
@@ -250,10 +257,10 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 		}
 		grant.ApprovalID = &approval.ID
 		if err := s.repo.SaveGrant(ctx, grant); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("request grant %q: save pending grant: %w", grant.ID, err)
 		}
 		if err := s.repo.SaveApproval(ctx, approval); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("request grant %q: save pending approval %q: %w", grant.ID, approval.ID, err)
 		}
 		s.appendAudit(ctx, &core.AuditEvent{
 			EventID:     s.ids.New("evt"),
@@ -270,7 +277,7 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 		})
 		if s.approvalNotifier != nil {
 			if err := s.approvalNotifier.NotifyPending(ctx, nil, approval, grant); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("request grant %q: notify pending approval %q: %w", grant.ID, approval.ID, err)
 			}
 		}
 		return &core.RequestGrantResponse{
@@ -281,7 +288,11 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 		}, nil
 	}
 
-	return s.issueGrant(ctx, session, grant, resource, connector)
+	resp, err := s.issueGrant(ctx, session, grant, resource, connector)
+	if err != nil {
+		return nil, fmt.Errorf("request grant %q: issue grant: %w", grant.ID, err)
+	}
+	return resp, nil
 }
 
 func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantRequest) (*core.RequestGrantResponse, error) {
@@ -291,24 +302,26 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 
 	approval, err := s.repo.GetApproval(ctx, req.ApprovalID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant via approval %q: load approval: %w", req.ApprovalID, err)
 	}
 	if approval.State != core.ApprovalStatePending {
 		return nil, fmt.Errorf("%w: approval is not pending", core.ErrForbidden)
 	}
 	if s.clock.Now().After(approval.ExpiresAt) {
 		approval.State = core.ApprovalStateExpired
-		_ = s.repo.SaveApproval(ctx, approval)
+		if err := s.repo.SaveApproval(ctx, approval); err != nil {
+			return nil, fmt.Errorf("approve grant via approval %q: expire approval: %w", req.ApprovalID, err)
+		}
 		return nil, fmt.Errorf("%w: approval expired", core.ErrForbidden)
 	}
 
 	grant, err := s.repo.GetGrant(ctx, approval.GrantID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant via approval %q: load grant %q: %w", req.ApprovalID, approval.GrantID, err)
 	}
 	session, err := s.repo.GetSession(ctx, grant.SessionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant %q: load session %q: %w", grant.ID, grant.SessionID, err)
 	}
 
 	approver := req.Approver
@@ -316,7 +329,7 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 	approval.Comment = req.Comment
 	approval.State = core.ApprovalStateApproved
 	if err := s.repo.SaveApproval(ctx, approval); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant %q: save approved approval %q: %w", grant.ID, approval.ID, err)
 	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -332,13 +345,17 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 
 	resource, err := core.ParseResource(grant.ResourceRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant %q: parse resource %q: %w", grant.ID, grant.ResourceRef, err)
 	}
 	connector, err := s.connectors.Resolve(ctx, grant.Capability, grant.ResourceRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approve grant %q: resolve connector: %w", grant.ID, err)
 	}
-	return s.issueGrant(ctx, session, grant, resource, connector)
+	resp, err := s.issueGrant(ctx, session, grant, resource, connector)
+	if err != nil {
+		return nil, fmt.Errorf("approve grant %q: issue grant: %w", grant.ID, err)
+	}
+	return resp, nil
 }
 
 func (s *Service) DenyGrant(ctx context.Context, req *core.DenyGrantRequest) error {
@@ -348,11 +365,11 @@ func (s *Service) DenyGrant(ctx context.Context, req *core.DenyGrantRequest) err
 
 	approval, err := s.repo.GetApproval(ctx, req.ApprovalID)
 	if err != nil {
-		return err
+		return fmt.Errorf("deny grant via approval %q: load approval: %w", req.ApprovalID, err)
 	}
 	grant, err := s.repo.GetGrant(ctx, approval.GrantID)
 	if err != nil {
-		return err
+		return fmt.Errorf("deny grant via approval %q: load grant %q: %w", req.ApprovalID, approval.GrantID, err)
 	}
 
 	approver := req.Approver
@@ -361,10 +378,10 @@ func (s *Service) DenyGrant(ctx context.Context, req *core.DenyGrantRequest) err
 	approval.State = core.ApprovalStateDenied
 	grant.State = core.GrantStateDenied
 	if err := s.repo.SaveApproval(ctx, approval); err != nil {
-		return err
+		return fmt.Errorf("deny grant %q: save denied approval %q: %w", grant.ID, approval.ID, err)
 	}
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
-		return err
+		return fmt.Errorf("deny grant %q: save denied grant: %w", grant.ID, err)
 	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -385,13 +402,16 @@ func (s *Service) RevokeGrant(ctx context.Context, req *core.RevokeGrantRequest)
 
 	grant, err := s.repo.GetGrant(ctx, req.GrantID)
 	if err != nil {
-		return err
+		return fmt.Errorf("revoke grant %q: load grant: %w", req.GrantID, err)
 	}
 	session, err := s.repo.GetSession(ctx, grant.SessionID)
 	if err != nil {
-		return err
+		return fmt.Errorf("revoke grant %q: load session %q: %w", grant.ID, grant.SessionID, err)
 	}
-	return s.transitionGrantState(ctx, session, grant, core.GrantStateRevoked, req.Reason)
+	if err := s.transitionGrantState(ctx, session, grant, core.GrantStateRevoked, req.Reason); err != nil {
+		return fmt.Errorf("revoke grant %q: transition state: %w", grant.ID, err)
+	}
+	return nil
 }
 
 func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequest) error {
@@ -401,16 +421,16 @@ func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequ
 
 	session, err := s.repo.GetSession(ctx, req.SessionID)
 	if err != nil {
-		return err
+		return fmt.Errorf("revoke session %q: load session: %w", req.SessionID, err)
 	}
 	session.State = core.SessionStateRevoked
 	if err := s.repo.SaveSession(ctx, session); err != nil {
-		return err
+		return fmt.Errorf("revoke session %q: save session: %w", session.ID, err)
 	}
 
 	grants, err := s.repo.ListGrantsBySession(ctx, req.SessionID)
 	if err != nil {
-		return err
+		return fmt.Errorf("revoke session %q: list grants: %w", session.ID, err)
 	}
 	for _, grant := range grants {
 		if grant.State == core.GrantStateRevoked || grant.State == core.GrantStateDenied || grant.State == core.GrantStateExpired {
@@ -418,7 +438,7 @@ func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequ
 		}
 
 		if err := s.transitionGrantState(ctx, session, grant, core.GrantStateRevoked, req.Reason); err != nil {
-			return err
+			return fmt.Errorf("revoke session %q: revoke grant %q: %w", session.ID, grant.ID, err)
 		}
 	}
 
@@ -444,7 +464,7 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 
 	artifact, err := s.repo.GetArtifactByHandle(ctx, req.ProxyHandle)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute github proxy %q: load artifact by handle: %w", req.ProxyHandle, err)
 	}
 	if artifact.Kind != core.ArtifactKindProxyHandle {
 		return nil, fmt.Errorf("%w: artifact %q is not a proxy handle", core.ErrForbidden, artifact.ID)
@@ -458,14 +478,14 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 
 	session, err := s.repo.GetSession(ctx, artifact.SessionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute github proxy %q: load session %q: %w", req.ProxyHandle, artifact.SessionID, err)
 	}
 	if session.State != core.SessionStateActive {
 		return nil, fmt.Errorf("%w: session is not active", core.ErrForbidden)
 	}
 	grant, err := s.repo.GetGrant(ctx, artifact.GrantID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute github proxy %q: load grant %q: %w", req.ProxyHandle, artifact.GrantID, err)
 	}
 	if grant.State != core.GrantStateIssued {
 		return nil, fmt.Errorf("%w: grant is not issued", core.ErrForbidden)
@@ -475,14 +495,9 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 	responseBytes := int64(0)
 	if s.runtime != nil {
 		if err := s.runtime.AcquireProxyRequest(ctx, req.ProxyHandle); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("execute github proxy %q: acquire proxy request budget: %w", req.ProxyHandle, err)
 		}
 		acquired = true
-		defer func() {
-			if acquired {
-				_ = s.runtime.CompleteProxyRequest(ctx, req.ProxyHandle, responseBytes)
-			}
-		}()
 	}
 
 	timeout := parseTimeout(artifact.Metadata["timeout_seconds"])
@@ -491,15 +506,27 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	if acquired && s.runtime != nil {
+		defer func() {
+			if acquired {
+				s.warnBestEffort("complete proxy request budget release failed",
+					s.runtime.CompleteProxyRequest(cleanupCtx, req.ProxyHandle, responseBytes),
+					"proxy_handle", req.ProxyHandle,
+					"grant_id", grant.ID,
+				)
+			}
+		}()
+	}
 
 	payload, err := s.githubProxy.Execute(ctx, artifact, req.Operation, req.Params)
 	responseBytes = int64(len(payload))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute github proxy %q operation %q: execute upstream request: %w", req.ProxyHandle, req.Operation, err)
 	}
 	if acquired && s.runtime != nil {
-		if err := s.runtime.CompleteProxyRequest(ctx, req.ProxyHandle, responseBytes); err != nil {
-			return nil, err
+		if err := s.runtime.CompleteProxyRequest(cleanupCtx, req.ProxyHandle, responseBytes); err != nil {
+			return nil, fmt.Errorf("execute github proxy %q operation %q: release proxy request budget: %w", req.ProxyHandle, req.Operation, err)
 		}
 		acquired = false
 	}
@@ -541,7 +568,7 @@ func (s *Service) RegisterBrowserRelay(ctx context.Context, req *core.RegisterBr
 
 	session, _, err := s.loadActiveSession(ctx, req.SessionToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("register browser relay for origin %q: load active session: %w", req.Origin, err)
 	}
 
 	relay := &core.BrowserRelaySession{
@@ -556,7 +583,7 @@ func (s *Service) RegisterBrowserRelay(ctx context.Context, req *core.RegisterBr
 		CreatedAt: s.clock.Now(),
 	}
 	if err := s.runtime.SaveRelaySession(ctx, relay); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("register browser relay for session %q: save relay session: %w", session.ID, err)
 	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -583,11 +610,11 @@ func (s *Service) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRe
 
 	session, _, err := s.loadActiveSession(ctx, req.SessionToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unwrap artifact %q: load active session: %w", req.ArtifactID, err)
 	}
 	artifact, err := s.repo.GetArtifact(ctx, req.ArtifactID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unwrap artifact %q: load artifact: %w", req.ArtifactID, err)
 	}
 	if artifact.Kind != core.ArtifactKindWrappedSecret {
 		return nil, fmt.Errorf("%w: artifact %q is not wrapped", core.ErrForbidden, artifact.ID)
@@ -605,7 +632,7 @@ func (s *Service) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRe
 		}
 		relay, err := s.runtime.GetRelaySession(ctx, session.ID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("unwrap artifact %q: load browser relay session %q: %w", req.ArtifactID, session.ID, err)
 		}
 		if relay.KeyID != req.KeyID || relay.Origin != req.Origin || relay.TabID != req.TabID {
 			return nil, fmt.Errorf("%w: relay binding mismatch", core.ErrForbidden)
@@ -617,7 +644,7 @@ func (s *Service) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRe
 
 	usedArtifact, err := s.repo.UseArtifact(ctx, req.ArtifactID, s.clock.Now())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unwrap artifact %q: mark artifact used: %w", req.ArtifactID, err)
 	}
 
 	fields := make([]core.BrowserFillField, 0, len(usedArtifact.SecretData))
@@ -656,7 +683,7 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 		Resource: resource,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue grant %q: connector %q issue: %w", grant.ID, connector.Kind(), err)
 	}
 
 	adapter, ok := s.deliveries[grant.DeliveryMode]
@@ -666,7 +693,7 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 
 	delivery, err := adapter.Deliver(ctx, artifact, session, grant)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue grant %q: deliver artifact via %q: %w", grant.ID, grant.DeliveryMode, err)
 	}
 
 	grant.State = core.GrantStateIssued
@@ -706,15 +733,15 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 		}
 	}
 	if err := s.repo.SaveArtifact(ctx, storedArtifact); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue grant %q: save artifact %q: %w", grant.ID, storedArtifact.ID, err)
 	}
 	if delivery.Handle != "" && s.runtime != nil {
 		if err := s.runtime.RegisterProxyHandle(ctx, delivery.Handle, budgetFromMetadata(artifact.Metadata), artifact.ExpiresAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("issue grant %q: register proxy handle %q: %w", grant.ID, delivery.Handle, err)
 		}
 	}
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue grant %q: save issued grant: %w", grant.ID, err)
 	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -759,18 +786,20 @@ func (s *Service) loadActiveSession(ctx context.Context, raw string) (*core.Sess
 
 	claims, err := s.sessionTokens.Verify(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("load active session: verify session token: %w", err)
 	}
 	session, err := s.repo.GetSession(ctx, claims.SessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("load active session %q: load session: %w", claims.SessionID, err)
 	}
 	if session.State != core.SessionStateActive {
 		return nil, nil, fmt.Errorf("%w: session is not active", core.ErrForbidden)
 	}
 	if s.clock.Now().After(session.ExpiresAt) {
 		session.State = core.SessionStateExpired
-		_ = s.repo.SaveSession(ctx, session)
+		if err := s.repo.SaveSession(ctx, session); err != nil {
+			return nil, nil, fmt.Errorf("load active session %q: expire session: %w", session.ID, err)
+		}
 		return nil, nil, fmt.Errorf("%w: session expired", core.ErrForbidden)
 	}
 	return session, claims, nil
@@ -805,7 +834,20 @@ func (s *Service) appendAudit(ctx context.Context, evt *core.AuditEvent) {
 	if s.audit == nil || evt == nil {
 		return
 	}
-	_ = s.audit.Append(ctx, evt)
+	s.warnBestEffort("audit append failed",
+		s.audit.Append(ctx, evt),
+		"event_id", evt.EventID,
+		"event_type", evt.EventType,
+		"tenant_id", evt.TenantID,
+	)
+}
+
+func (s *Service) warnBestEffort(msg string, err error, args ...any) {
+	if err == nil {
+		return
+	}
+	args = append(args, "error", err)
+	s.logger.Warn(msg, args...)
 }
 
 func hashWorkload(workload *core.WorkloadIdentity) string {

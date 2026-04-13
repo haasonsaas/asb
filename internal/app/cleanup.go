@@ -20,46 +20,46 @@ func (s *Service) RunCleanupOnce(ctx context.Context, limit int) (*CleanupStats,
 
 	approvals, err := s.repo.ListExpiredApprovals(ctx, now, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run cleanup: list expired approvals: %w", err)
 	}
 	for _, approval := range approvals {
 		if err := s.expireApproval(ctx, approval); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("run cleanup: expire approval %q: %w", approval.ID, err)
 		}
 		stats.ApprovalsExpired++
 	}
 
 	sessions, err := s.repo.ListExpiredSessions(ctx, now, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run cleanup: list expired sessions: %w", err)
 	}
 	for _, session := range sessions {
 		if err := s.expireSession(ctx, session, stats); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("run cleanup: expire session %q: %w", session.ID, err)
 		}
 	}
 
 	grants, err := s.repo.ListExpiredGrants(ctx, now, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run cleanup: list expired grants: %w", err)
 	}
 	for _, grant := range grants {
 		session, err := s.repo.GetSession(ctx, grant.SessionID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("run cleanup: load session %q for expired grant %q: %w", grant.SessionID, grant.ID, err)
 		}
 		if session.State != core.SessionStateActive {
 			continue
 		}
 		if err := s.transitionGrantState(ctx, session, grant, core.GrantStateExpired, "grant_expired"); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("run cleanup: expire grant %q: %w", grant.ID, err)
 		}
 		stats.GrantsExpired++
 	}
 
 	artifacts, err := s.repo.ListExpiredArtifacts(ctx, now, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run cleanup: list expired artifacts: %w", err)
 	}
 	for _, artifact := range artifacts {
 		if artifact.State == core.ArtifactStateExpired {
@@ -67,7 +67,7 @@ func (s *Service) RunCleanupOnce(ctx context.Context, limit int) (*CleanupStats,
 		}
 		artifact.State = core.ArtifactStateExpired
 		if err := s.repo.SaveArtifact(ctx, artifact); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("run cleanup: save expired artifact %q: %w", artifact.ID, err)
 		}
 		stats.ArtifactsExpired++
 		s.appendAudit(ctx, &core.AuditEvent{
@@ -89,17 +89,17 @@ func (s *Service) expireApproval(ctx context.Context, approval *core.Approval) e
 	}
 	approval.State = core.ApprovalStateExpired
 	if err := s.repo.SaveApproval(ctx, approval); err != nil {
-		return err
+		return fmt.Errorf("expire approval %q: save approval: %w", approval.ID, err)
 	}
 
 	grant, err := s.repo.GetGrant(ctx, approval.GrantID)
 	if err != nil {
-		return err
+		return fmt.Errorf("expire approval %q: load grant %q: %w", approval.ID, approval.GrantID, err)
 	}
 	if grant.State == core.GrantStatePending {
 		grant.State = core.GrantStateExpired
 		if err := s.repo.SaveGrant(ctx, grant); err != nil {
-			return err
+			return fmt.Errorf("expire approval %q: save expired grant %q: %w", approval.ID, grant.ID, err)
 		}
 	}
 
@@ -120,7 +120,7 @@ func (s *Service) expireSession(ctx context.Context, session *core.Session, stat
 	}
 	grants, err := s.repo.ListGrantsBySession(ctx, session.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("expire session %q: list grants: %w", session.ID, err)
 	}
 	for _, grant := range grants {
 		switch grant.State {
@@ -128,13 +128,13 @@ func (s *Service) expireSession(ctx context.Context, session *core.Session, stat
 			continue
 		}
 		if err := s.transitionGrantState(ctx, session, grant, core.GrantStateExpired, "session_expired"); err != nil {
-			return err
+			return fmt.Errorf("expire session %q: expire grant %q: %w", session.ID, grant.ID, err)
 		}
 		stats.GrantsExpired++
 	}
 	session.State = core.SessionStateExpired
 	if err := s.repo.SaveSession(ctx, session); err != nil {
-		return err
+		return fmt.Errorf("expire session %q: save session: %w", session.ID, err)
 	}
 	stats.SessionsExpired++
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -157,21 +157,21 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 	if grant.ArtifactRef != nil {
 		artifact, err = s.repo.GetArtifact(ctx, *grant.ArtifactRef)
 		if err != nil {
-			return err
+			return fmt.Errorf("transition grant %q to %q: load artifact %q: %w", grant.ID, state, *grant.ArtifactRef, err)
 		}
 	}
 
 	if session == nil {
 		session, err = s.repo.GetSession(ctx, grant.SessionID)
 		if err != nil {
-			return err
+			return fmt.Errorf("transition grant %q to %q: load session %q: %w", grant.ID, state, grant.SessionID, err)
 		}
 	}
 
 	if state == core.GrantStateRevoked || state == core.GrantStateExpired {
 		connector, err := s.connectors.Resolve(ctx, grant.Capability, grant.ResourceRef)
 		if err != nil {
-			return err
+			return fmt.Errorf("transition grant %q to %q: resolve connector: %w", grant.ID, state, err)
 		}
 		if err := connector.Revoke(ctx, core.RevokeRequest{
 			Session:  session,
@@ -179,13 +179,13 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 			Artifact: artifact,
 			Reason:   reason,
 		}); err != nil {
-			return err
+			return fmt.Errorf("transition grant %q to %q: revoke connector state: %w", grant.ID, state, err)
 		}
 	}
 
 	grant.State = state
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
-		return err
+		return fmt.Errorf("transition grant %q to %q: save grant: %w", grant.ID, state, err)
 	}
 
 	if artifact != nil {
@@ -198,7 +198,7 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 			}
 		}
 		if err := s.repo.SaveArtifact(ctx, artifact); err != nil {
-			return err
+			return fmt.Errorf("transition grant %q to %q: save artifact %q: %w", grant.ID, state, artifact.ID, err)
 		}
 	}
 

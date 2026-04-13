@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/evalops/asb/internal/app"
 	auditmemory "github.com/evalops/asb/internal/audit/memory"
 	"github.com/evalops/asb/internal/authn/delegationjwt"
@@ -32,6 +31,7 @@ import (
 	memstore "github.com/evalops/asb/internal/store/memory"
 	postgresstore "github.com/evalops/asb/internal/store/postgres"
 	redisstore "github.com/evalops/asb/internal/store/redis"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -192,6 +192,7 @@ func NewService(ctx context.Context, logger *slog.Logger, options ...ServiceOpti
 	}
 
 	svc, err := app.NewService(app.Config{
+		Logger:              logger,
 		Repository:          repository,
 		Verifier:            verifier,
 		DelegationValidator: delegationValidator,
