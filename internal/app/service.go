@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -212,6 +213,7 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 	if err != nil {
 		return nil, fmt.Errorf("request grant for session %q: evaluate policy for capability %q: %w", session.ID, req.Capability, err)
 	}
+	s.metrics.recordPolicyEvaluation(req.Capability, decision.Allowed)
 	if !decision.Allowed {
 		return nil, fmt.Errorf("%w: %s", core.ErrForbidden, decision.Reason)
 	}
@@ -506,6 +508,9 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 	responseBytes := int64(0)
 	if s.runtime != nil {
 		if err := s.runtime.AcquireProxyRequest(ctx, req.ProxyHandle); err != nil {
+			if errors.Is(err, core.ErrResourceBudgetExceeded) {
+				s.metrics.recordBudgetExhaustion(req.ProxyHandle)
+			}
 			return nil, fmt.Errorf("execute github proxy %q: acquire proxy request budget: %w", req.ProxyHandle, err)
 		}
 		acquired = true
@@ -537,6 +542,9 @@ func (s *Service) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHu
 	}
 	if acquired && s.runtime != nil {
 		if err := s.runtime.CompleteProxyRequest(cleanupCtx, req.ProxyHandle, responseBytes); err != nil {
+			if errors.Is(err, core.ErrResourceBudgetExceeded) {
+				s.metrics.recordBudgetExhaustion(req.ProxyHandle)
+			}
 			return nil, fmt.Errorf("execute github proxy %q operation %q: release proxy request budget: %w", req.ProxyHandle, req.Operation, err)
 		}
 		acquired = false

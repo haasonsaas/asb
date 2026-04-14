@@ -447,6 +447,220 @@ func TestServiceMetrics_ExpireApprovalAndGrant(t *testing.T) {
 	}
 }
 
+func TestServiceMetrics_PolicyEvaluationOutcomes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	registry := prometheus.NewRegistry()
+	metrics, err := app.NewMetrics("asb", app.MetricsOptions{
+		Registerer: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	repo := memstore.NewRepository()
+	tools := toolregistry.New()
+	engine := policy.NewEngine()
+	signer := mustNewSigner(t)
+	connector := &fakeConnector{
+		kind: "github",
+		issued: &core.IssuedArtifact{
+			Kind: core.ArtifactKindProxyHandle,
+			Metadata: map[string]string{
+				"handle": "ph_policy_metrics",
+			},
+		},
+	}
+	delivery := &fakeDeliveryAdapter{
+		mode: core.DeliveryModeProxy,
+		delivery: &core.Delivery{
+			Kind:   core.DeliveryKindProxyHandle,
+			Handle: "ph_policy_metrics",
+		},
+	}
+
+	mustPutTool(t, ctx, tools, core.Tool{
+		TenantID:             "t_acme",
+		Tool:                 "github",
+		ManifestHash:         "sha256:test",
+		RuntimeClass:         core.RuntimeClassHosted,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeProxy},
+		AllowedCapabilities:  []string{"repo.read", "repo.write"},
+		TrustTags:            []string{"trusted", "github"},
+	})
+	mustPutPolicy(t, engine, core.Policy{
+		TenantID:             "t_acme",
+		Capability:           "repo.read",
+		ResourceKind:         core.ResourceKindGitHubRepo,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeProxy},
+		DefaultTTL:           10 * time.Minute,
+		MaxTTL:               10 * time.Minute,
+		ApprovalMode:         core.ApprovalModeNone,
+		RequiredToolTags:     []string{"trusted", "github"},
+		Condition:            `true`,
+	})
+
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		IDs:           fixedIDs("sess_policy_metrics", "evt_1", "gr_policy_metrics", "art_policy_metrics", "evt_2", "evt_3"),
+		Metrics:       metrics,
+		Repository:    repo,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: signer,
+		Policy:        engine,
+		Tools:         tools,
+		Connectors:    fakeConnectorResolver{connector: connector},
+		Deliveries: map[core.DeliveryMode]core.DeliveryAdapter{
+			core.DeliveryModeProxy: delivery,
+		},
+		Audit: memory.NewSink(),
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	sessionResp, err := svc.CreateSession(ctx, &core.CreateSessionRequest{
+		TenantID:    "t_acme",
+		AgentID:     "agent_pr_reviewer",
+		RunID:       "run_policy_metrics",
+		ToolContext: []string{"github"},
+		Attestation: &core.Attestation{Kind: core.AttestationKindK8SServiceAccountJWT, Token: "jwt"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	if _, err := svc.RequestGrant(ctx, &core.RequestGrantRequest{
+		SessionToken: sessionResp.SessionToken,
+		Tool:         "github",
+		Capability:   "repo.read",
+		ResourceRef:  "github:repo:acme/widgets",
+		DeliveryMode: core.DeliveryModeProxy,
+	}); err != nil {
+		t.Fatalf("RequestGrant(repo.read) error = %v", err)
+	}
+	if _, err := svc.RequestGrant(ctx, &core.RequestGrantRequest{
+		SessionToken: sessionResp.SessionToken,
+		Tool:         "github",
+		Capability:   "repo.write",
+		ResourceRef:  "github:repo:acme/widgets",
+		DeliveryMode: core.DeliveryModeProxy,
+	}); err == nil {
+		t.Fatal("RequestGrant(repo.write) error = nil, want denied policy decision")
+	}
+
+	families := mustGatherMetrics(t, registry)
+	if got := metricValueWithLabels(families, "asb_policy_evaluations_total", map[string]string{"capability": "repo.read", "outcome": "allowed"}); got != 1 {
+		t.Fatalf("allowed policy evaluations = %v, want 1", got)
+	}
+	if got := metricValueWithLabels(families, "asb_policy_evaluations_total", map[string]string{"capability": "repo.write", "outcome": "denied"}); got != 1 {
+		t.Fatalf("denied policy evaluations = %v, want 1", got)
+	}
+}
+
+func TestServiceMetrics_BudgetExhaustion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	registry := prometheus.NewRegistry()
+	metrics, err := app.NewMetrics("asb", app.MetricsOptions{
+		Registerer: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	repo := memstore.NewRepository()
+	runtimeStore := memstore.NewRuntimeStore()
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		Metrics:       metrics,
+		Repository:    repo,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: mustNewSigner(t),
+		Policy:        stubPolicyEngine{},
+		Tools:         stubToolRegistry{},
+		Connectors:    fakeConnectorResolver{connector: &fakeConnector{kind: "github"}},
+		Runtime:       runtimeStore,
+		GitHubProxy:   &fakeGitHubProxyExecutor{payload: []byte(`{"ok":true}`)},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	session := &core.Session{
+		ID:        "sess_budget_metrics",
+		TenantID:  "t_acme",
+		AgentID:   "agent_pr_reviewer",
+		RunID:     "run_budget_metrics",
+		State:     core.SessionStateActive,
+		ExpiresAt: now.Add(10 * time.Minute),
+		CreatedAt: now,
+	}
+	artifactID := "art_budget_metrics"
+	grant := &core.Grant{
+		ID:          "gr_budget_metrics",
+		TenantID:    "t_acme",
+		SessionID:   session.ID,
+		Tool:        "github",
+		Capability:  "repo.read",
+		ResourceRef: "github:repo:acme/widgets",
+		State:       core.GrantStateIssued,
+		ArtifactRef: &artifactID,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(10 * time.Minute),
+	}
+	artifact := &core.Artifact{
+		ID:            artifactID,
+		TenantID:      "t_acme",
+		SessionID:     session.ID,
+		GrantID:       grant.ID,
+		Handle:        "ph_budget_metrics",
+		Kind:          core.ArtifactKindProxyHandle,
+		ConnectorKind: "github",
+		State:         core.ArtifactStateIssued,
+		ExpiresAt:     now.Add(10 * time.Minute),
+		CreatedAt:     now,
+		Metadata: map[string]string{
+			"operations": "pull_request_files",
+		},
+	}
+
+	if err := repo.SaveSession(ctx, session); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := repo.SaveGrant(ctx, grant); err != nil {
+		t.Fatalf("SaveGrant() error = %v", err)
+	}
+	if err := repo.SaveArtifact(ctx, artifact); err != nil {
+		t.Fatalf("SaveArtifact() error = %v", err)
+	}
+	if err := runtimeStore.RegisterProxyHandle(ctx, artifact.Handle, core.ProxyBudget{MaxRequests: 1}, artifact.ExpiresAt); err != nil {
+		t.Fatalf("RegisterProxyHandle() error = %v", err)
+	}
+
+	if _, err := svc.ExecuteGitHubProxy(ctx, &core.ExecuteGitHubProxyRequest{
+		ProxyHandle: artifact.Handle,
+		Operation:   "pull_request_files",
+	}); err != nil {
+		t.Fatalf("ExecuteGitHubProxy(first) error = %v", err)
+	}
+	if _, err := svc.ExecuteGitHubProxy(ctx, &core.ExecuteGitHubProxyRequest{
+		ProxyHandle: artifact.Handle,
+		Operation:   "pull_request_files",
+	}); err == nil {
+		t.Fatal("ExecuteGitHubProxy(second) error = nil, want budget exhaustion")
+	}
+
+	families := mustGatherMetrics(t, registry)
+	if got := metricValueWithLabels(families, "asb_budget_exhaustion_total", map[string]string{"handle": "ph_budget_metrics"}); got != 1 {
+		t.Fatalf("budget exhaustion count = %v, want 1", got)
+	}
+}
+
 func mustGatherMetrics(t *testing.T, gatherer prometheus.Gatherer) []*dto.MetricFamily {
 	t.Helper()
 

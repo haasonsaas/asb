@@ -25,6 +25,8 @@ type Metrics struct {
 	grantTTL       prometheus.Histogram
 	approvalsTotal *prometheus.CounterVec
 	approvalWait   *prometheus.HistogramVec
+	policyEval     *prometheus.CounterVec
+	budgetExhaust  *prometheus.CounterVec
 }
 
 // NewMetrics creates Prometheus collectors for ASB domain metrics.
@@ -117,6 +119,34 @@ func NewMetrics(serviceName string, opts MetricsOptions) (*Metrics, error) {
 		return nil, err
 	}
 
+	policyEval, err := registerCounterVec(
+		opts.Registerer,
+		prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefix + "_policy_evaluations_total",
+				Help: "Count of ASB policy evaluations by capability and outcome.",
+			},
+			[]string{"capability", "outcome"},
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	budgetExhaust, err := registerCounterVec(
+		opts.Registerer,
+		prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefix + "_budget_exhaustion_total",
+				Help: "Count of ASB proxy budget exhaustion events by handle.",
+			},
+			[]string{"handle"},
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Metrics{
 		sessionsActive: sessionsActive,
 		sessionsTotal:  sessionsTotal,
@@ -124,6 +154,8 @@ func NewMetrics(serviceName string, opts MetricsOptions) (*Metrics, error) {
 		grantTTL:       grantTTL,
 		approvalsTotal: approvalsTotal,
 		approvalWait:   approvalWait,
+		policyEval:     policyEval,
+		budgetExhaust:  budgetExhaust,
 	}, nil
 }
 
@@ -189,6 +221,24 @@ func (metrics *Metrics) recordApprovalTransition(state core.ApprovalState, wait 
 		metrics.approvalsTotal.WithLabelValues(string(state)).Inc()
 		metrics.approvalWait.WithLabelValues(string(state)).Observe(wait.Seconds())
 	}
+}
+
+func (metrics *Metrics) recordPolicyEvaluation(capability string, allowed bool) {
+	if metrics == nil {
+		return
+	}
+	outcome := "denied"
+	if allowed {
+		outcome = "allowed"
+	}
+	metrics.policyEval.WithLabelValues(labelOrUnknown(capability), outcome).Inc()
+}
+
+func (metrics *Metrics) recordBudgetExhaustion(handle string) {
+	if metrics == nil {
+		return
+	}
+	metrics.budgetExhaust.WithLabelValues(labelOrUnknown(handle)).Inc()
 }
 
 func labelOrUnknown(value string) string {
