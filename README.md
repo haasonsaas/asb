@@ -244,6 +244,10 @@ Flags: `-interval` (default 30s), `-limit` (default 100 per pass), `-once` (sing
 | `ASB_HTTP_DEFAULT_TIMEOUT` | Default JSON handler timeout |
 | `ASB_HTTP_GRANT_TIMEOUT` | Grant and approval handler timeout |
 | `ASB_HTTP_PROXY_TIMEOUT` | Proxy handler timeout |
+| `ASB_HTTP_RATE_LIMIT_RPS` | Sustained per-IP JSON API rate limit |
+| `ASB_HTTP_RATE_LIMIT_BURST` | Burst size for the per-IP JSON API limiter |
+| `ASB_HTTP_RATE_LIMIT_MAX_AGE` | Idle lifetime for per-IP limiter entries |
+| `ASB_HTTP_RATE_LIMIT_CLEANUP_INTERVAL` | Cleanup cadence for stale per-IP limiter entries |
 | `ASB_HTTP_READY_TIMEOUT` | Dependency timeout for `/readyz` |
 | `ASB_HTTP_SHUTDOWN_TIMEOUT` | API shutdown drain timeout |
 | `ASB_GITHUB_TOKEN` | Static GitHub token (dev) |
@@ -299,6 +303,10 @@ make run-api
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
 ```
+
+### HTTP rate limiting
+
+The JSON API now applies per-IP rate limiting through the shared `service-runtime/ratelimit` middleware. Health and metrics endpoints remain exempt. Defaults are tuned for internal service traffic and can be overridden with the `ASB_HTTP_RATE_LIMIT_*` env vars above.
 
 ### Shared approval notifications
 

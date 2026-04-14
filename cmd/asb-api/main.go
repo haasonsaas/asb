@@ -12,6 +12,7 @@ import (
 	"github.com/evalops/asb/internal/api/connectapi"
 	"github.com/evalops/asb/internal/api/httpapi"
 	"github.com/evalops/asb/internal/bootstrap"
+	"github.com/evalops/service-runtime/ratelimit"
 )
 
 func main() {
@@ -32,11 +33,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	limiter := ratelimit.New(ratelimit.Config{
+		RequestsPerSecond: cfg.rateLimitRPS,
+		Burst:             cfg.rateLimitBurst,
+		CleanupInterval:   cfg.rateLimitCleanup,
+		MaxAge:            cfg.rateLimitMaxAge,
+		ExemptPaths:       ratelimit.DefaultConfig().ExemptPaths,
+	})
+	defer limiter.Close()
+
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", httpapi.NewServer(
 		runtime.Service,
 		httpapi.WithMaxBodyBytes(cfg.maxBodyBytes),
 		httpapi.WithRequestTimeouts(cfg.defaultTimeout, cfg.grantTimeout, cfg.proxyTimeout),
+		httpapi.WithRateLimiter(limiter),
 	))
 	connectPath, connectHandler := connectapi.NewHandler(runtime.Service)
 	mux.Handle(connectPath, connectHandler)
@@ -61,6 +72,10 @@ func main() {
 		"default_timeout", cfg.defaultTimeout,
 		"grant_timeout", cfg.grantTimeout,
 		"proxy_timeout", cfg.proxyTimeout,
+		"rate_limit_rps", cfg.rateLimitRPS,
+		"rate_limit_burst", cfg.rateLimitBurst,
+		"rate_limit_max_age", cfg.rateLimitMaxAge,
+		"rate_limit_cleanup_interval", cfg.rateLimitCleanup,
 	)
 
 	serverErr := make(chan error, 1)

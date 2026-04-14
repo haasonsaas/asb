@@ -16,6 +16,10 @@ func TestLoadServerConfigDefaults(t *testing.T) {
 	t.Setenv("ASB_HTTP_DEFAULT_TIMEOUT", "")
 	t.Setenv("ASB_HTTP_GRANT_TIMEOUT", "")
 	t.Setenv("ASB_HTTP_PROXY_TIMEOUT", "")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_RPS", "")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_BURST", "")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_MAX_AGE", "")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_CLEANUP_INTERVAL", "")
 
 	cfg, err := loadServerConfig()
 	if err != nil {
@@ -33,6 +37,9 @@ func TestLoadServerConfigDefaults(t *testing.T) {
 	if cfg.readyTimeout != 2*time.Second || cfg.shutdownTimeout != 30*time.Second {
 		t.Fatalf("unexpected health/shutdown timeouts: %#v", cfg)
 	}
+	if cfg.rateLimitRPS != 100 || cfg.rateLimitBurst != 200 {
+		t.Fatalf("unexpected rate limit config: %#v", cfg)
+	}
 }
 
 func TestLoadServerConfigParsesOverrides(t *testing.T) {
@@ -46,6 +53,10 @@ func TestLoadServerConfigParsesOverrides(t *testing.T) {
 	t.Setenv("ASB_HTTP_DEFAULT_TIMEOUT", "9s")
 	t.Setenv("ASB_HTTP_GRANT_TIMEOUT", "29s")
 	t.Setenv("ASB_HTTP_PROXY_TIMEOUT", "45s")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_RPS", "7.5")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_BURST", "22")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_MAX_AGE", "9m")
+	t.Setenv("ASB_HTTP_RATE_LIMIT_CLEANUP_INTERVAL", "75s")
 
 	cfg, err := loadServerConfig()
 	if err != nil {
@@ -62,6 +73,12 @@ func TestLoadServerConfigParsesOverrides(t *testing.T) {
 	}
 	if cfg.defaultTimeout != 9*time.Second || cfg.grantTimeout != 29*time.Second || cfg.proxyTimeout != 45*time.Second {
 		t.Fatalf("unexpected request timeouts: %#v", cfg)
+	}
+	if cfg.rateLimitRPS != 7.5 || cfg.rateLimitBurst != 22 {
+		t.Fatalf("unexpected rate limit config: %#v", cfg)
+	}
+	if cfg.rateLimitMaxAge != 9*time.Minute || cfg.rateLimitCleanup != 75*time.Second {
+		t.Fatalf("unexpected rate limit durations: %#v", cfg)
 	}
 }
 

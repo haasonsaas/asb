@@ -13,6 +13,7 @@ import (
 
 	"github.com/evalops/asb/internal/api/httpapi"
 	"github.com/evalops/asb/internal/core"
+	"github.com/evalops/service-runtime/ratelimit"
 )
 
 func TestServer_CreateSession(t *testing.T) {
@@ -159,6 +160,40 @@ func TestServer_RequestTimeoutReturnsGatewayTimeout(t *testing.T) {
 
 	if recorder.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusGatewayTimeout)
+	}
+}
+
+func TestServer_RateLimitReturnsTooManyRequests(t *testing.T) {
+	t.Parallel()
+
+	limiter := ratelimit.New(ratelimit.Config{
+		RequestsPerSecond: 1,
+		Burst:             1,
+		CleanupInterval:   time.Hour,
+		MaxAge:            time.Hour,
+		ExemptPaths:       map[string]bool{},
+	})
+	defer limiter.Close()
+
+	server := httpapi.NewServer(&stubService{}, httpapi.WithRateLimiter(limiter))
+
+	first := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewBufferString(`{}`))
+	first.Header.Set("Content-Type", "application/json")
+	first.RemoteAddr = "203.0.113.10:1234"
+	firstRecorder := httptest.NewRecorder()
+	server.ServeHTTP(firstRecorder, first)
+
+	second := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewBufferString(`{}`))
+	second.Header.Set("Content-Type", "application/json")
+	second.RemoteAddr = "203.0.113.10:5678"
+	secondRecorder := httptest.NewRecorder()
+	server.ServeHTTP(secondRecorder, second)
+
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+	if got := secondRecorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("retry-after = %q, want %q", got, "1")
 	}
 }
 

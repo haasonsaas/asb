@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/evalops/asb/internal/core"
+	"github.com/evalops/service-runtime/ratelimit"
 )
 
 type Service interface {
@@ -26,9 +27,10 @@ type Service interface {
 }
 
 type Server struct {
-	service  Service
-	maxBody  int64
-	timeouts requestTimeouts
+	service     Service
+	maxBody     int64
+	timeouts    requestTimeouts
+	rateLimiter *ratelimit.Limiter
 }
 
 type Option func(*Server)
@@ -86,7 +88,21 @@ func WithRequestTimeouts(defaultTimeout time.Duration, grantTimeout time.Duratio
 	}
 }
 
+func WithRateLimiter(limiter *ratelimit.Limiter) Option {
+	return func(server *Server) {
+		server.rateLimiter = limiter
+	}
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Middleware(http.HandlerFunc(s.serveHTTP)).ServeHTTP(w, r)
+		return
+	}
+	s.serveHTTP(w, r)
+}
+
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	switch {
