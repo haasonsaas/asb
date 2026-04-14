@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -25,11 +26,64 @@ type Service interface {
 }
 
 type Server struct {
-	service Service
+	service  Service
+	maxBody  int64
+	timeouts requestTimeouts
 }
 
-func NewServer(service Service) *Server {
-	return &Server{service: service}
+type Option func(*Server)
+
+type requestTimeouts struct {
+	defaultTimeout time.Duration
+	grantTimeout   time.Duration
+	proxyTimeout   time.Duration
+}
+
+const (
+	defaultMaxBodyBytes   int64         = 1 << 20
+	defaultRequestTimeout time.Duration = 10 * time.Second
+	defaultGrantTimeout   time.Duration = 20 * time.Second
+	defaultProxyTimeout   time.Duration = 30 * time.Second
+)
+
+var errUnsupportedContentType = errors.New("content-type must be application/json")
+
+func NewServer(service Service, options ...Option) *Server {
+	server := &Server{
+		service: service,
+		maxBody: defaultMaxBodyBytes,
+		timeouts: requestTimeouts{
+			defaultTimeout: defaultRequestTimeout,
+			grantTimeout:   defaultGrantTimeout,
+			proxyTimeout:   defaultProxyTimeout,
+		},
+	}
+	for _, option := range options {
+		option(server)
+	}
+	return server
+}
+
+func WithMaxBodyBytes(limit int64) Option {
+	return func(server *Server) {
+		if limit > 0 {
+			server.maxBody = limit
+		}
+	}
+}
+
+func WithRequestTimeouts(defaultTimeout time.Duration, grantTimeout time.Duration, proxyTimeout time.Duration) Option {
+	return func(server *Server) {
+		if defaultTimeout > 0 {
+			server.timeouts.defaultTimeout = defaultTimeout
+		}
+		if grantTimeout > 0 {
+			server.timeouts.grantTimeout = grantTimeout
+		}
+		if proxyTimeout > 0 {
+			server.timeouts.proxyTimeout = proxyTimeout
+		}
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,23 +91,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions":
-		s.handleCreateSession(w, r)
+		s.handleCreateSession(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/grants":
-		s.handleRequestGrant(w, r)
+		s.handleRequestGrant(w, s.withTimeout(r, s.timeouts.grantTimeout))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/approvals/") && strings.HasSuffix(r.URL.Path, ":approve"):
-		s.handleApproveGrant(w, r)
+		s.handleApproveGrant(w, s.withTimeout(r, s.timeouts.grantTimeout))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/approvals/") && strings.HasSuffix(r.URL.Path, ":deny"):
-		s.handleDenyGrant(w, r)
+		s.handleDenyGrant(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/grants/") && strings.HasSuffix(r.URL.Path, ":revoke"):
-		s.handleRevokeGrant(w, r)
+		s.handleRevokeGrant(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/sessions/") && strings.HasSuffix(r.URL.Path, ":revoke"):
-		s.handleRevokeSession(w, r)
+		s.handleRevokeSession(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/proxy/github/rest":
-		s.handleExecuteGitHubProxy(w, r)
+		s.handleExecuteGitHubProxy(w, s.withTimeout(r, s.timeouts.proxyTimeout))
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/browser/relay-sessions":
-		s.handleRegisterBrowserRelay(w, r)
+		s.handleRegisterBrowserRelay(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/artifacts/") && strings.HasSuffix(r.URL.Path, ":unwrap"):
-		s.handleUnwrapArtifact(w, r)
+		s.handleUnwrapArtifact(w, s.withTimeout(r, s.timeouts.defaultTimeout))
 	default:
 		http.NotFound(w, r)
 	}
@@ -61,7 +115,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -91,7 +145,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRequestGrant(w http.ResponseWriter, r *http.Request) {
 	var req requestGrantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -115,7 +169,7 @@ func (s *Server) handleRequestGrant(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleApproveGrant(w http.ResponseWriter, r *http.Request) {
 	var req approvalDecisionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -136,7 +190,7 @@ func (s *Server) handleApproveGrant(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDenyGrant(w http.ResponseWriter, r *http.Request) {
 	var req approvalDecisionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -156,7 +210,7 @@ func (s *Server) handleDenyGrant(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 	var req revokeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := s.decodeJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, err)
 		return
 	}
@@ -174,7 +228,7 @@ func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 	var req revokeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := s.decodeJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, err)
 		return
 	}
@@ -192,7 +246,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExecuteGitHubProxy(w http.ResponseWriter, r *http.Request) {
 	var req executeGitHubProxyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -213,7 +267,7 @@ func (s *Server) handleExecuteGitHubProxy(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleRegisterBrowserRelay(w http.ResponseWriter, r *http.Request) {
 	var req registerBrowserRelayRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -238,7 +292,7 @@ func (s *Server) handleRegisterBrowserRelay(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleUnwrapArtifact(w http.ResponseWriter, r *http.Request) {
 	var req unwrapArtifactRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeJSON(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -290,7 +344,14 @@ func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError
+	var maxBytesErr *http.MaxBytesError
 	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		status = http.StatusGatewayTimeout
+	case errors.Is(err, errUnsupportedContentType):
+		status = http.StatusUnsupportedMediaType
+	case errors.As(err, &maxBytesErr):
+		status = http.StatusRequestEntityTooLarge
 	case errors.As(err, &syntaxErr), errors.As(err, &typeErr), errors.Is(err, io.EOF):
 		status = http.StatusBadRequest
 	case errors.Is(err, core.ErrInvalidRequest):
@@ -303,6 +364,59 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) withTimeout(r *http.Request, timeout time.Duration) *http.Request {
+	if timeout <= 0 {
+		return r
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	return r.Clone(context.WithValue(ctx, requestCancelKey{}, cancel))
+}
+
+func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, out any) error {
+	defer s.finishRequest(r)
+
+	if err := requireJSONContentType(r); err != nil {
+		return err
+	}
+
+	body := http.MaxBytesReader(w, r.Body, s.maxBody)
+	defer body.Close()
+
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
+		return errors.New("request body must contain a single JSON object")
+	}
+	return nil
+}
+
+type requestCancelKey struct{}
+
+func (s *Server) finishRequest(r *http.Request) {
+	cancel, _ := r.Context().Value(requestCancelKey{}).(context.CancelFunc)
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func requireJSONContentType(r *http.Request) error {
+	contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if contentType == "" {
+		return errUnsupportedContentType
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return errUnsupportedContentType
+	}
+	if mediaType != "application/json" {
+		return errUnsupportedContentType
+	}
+	return nil
 }
 
 type createSessionRequest struct {

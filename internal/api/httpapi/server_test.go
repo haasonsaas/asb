@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +104,61 @@ func TestServer_RequestGrant(t *testing.T) {
 	}
 	if payload["grant_id"] != "gr_123" {
 		t.Fatalf("grant_id = %v, want gr_123", payload["grant_id"])
+	}
+}
+
+func TestServer_RejectsUnsupportedContentType(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "text/plain")
+	recorder := httptest.NewRecorder()
+
+	httpapi.NewServer(&stubService{}).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestServer_RejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewBufferString(`{"tenant_id":"`+strings.Repeat("a", 256)+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	httpapi.NewServer(&stubService{}, httpapi.WithMaxBodyBytes(32)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestServer_RequestTimeoutReturnsGatewayTimeout(t *testing.T) {
+	t.Parallel()
+
+	svc := &stubService{
+		createSession: func(ctx context.Context, req *core.CreateSessionRequest) (*core.CreateSessionResponse, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", bytes.NewBufferString(`{
+		"tenant_id":"t_acme",
+		"agent_id":"agent_pr_reviewer",
+		"run_id":"run_7f9",
+		"tool_context":["github"],
+		"attestation":{"kind":"k8s_sa_jwt","token":"jwt"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	httpapi.NewServer(svc, httpapi.WithRequestTimeouts(time.Nanosecond, time.Nanosecond, time.Nanosecond)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusGatewayTimeout)
 	}
 }
 
@@ -246,37 +303,64 @@ type stubService struct {
 }
 
 func (s *stubService) CreateSession(ctx context.Context, req *core.CreateSessionRequest) (*core.CreateSessionResponse, error) {
+	if s.createSession == nil {
+		return nil, errors.New("unexpected create session call")
+	}
 	return s.createSession(ctx, req)
 }
 
 func (s *stubService) RequestGrant(ctx context.Context, req *core.RequestGrantRequest) (*core.RequestGrantResponse, error) {
+	if s.requestGrant == nil {
+		return nil, errors.New("unexpected request grant call")
+	}
 	return s.requestGrant(ctx, req)
 }
 
 func (s *stubService) ApproveGrant(ctx context.Context, req *core.ApproveGrantRequest) (*core.RequestGrantResponse, error) {
+	if s.approveGrant == nil {
+		return nil, errors.New("unexpected approve grant call")
+	}
 	return s.approveGrant(ctx, req)
 }
 
 func (s *stubService) DenyGrant(ctx context.Context, req *core.DenyGrantRequest) error {
+	if s.denyGrant == nil {
+		return errors.New("unexpected deny grant call")
+	}
 	return s.denyGrant(ctx, req)
 }
 
 func (s *stubService) RevokeGrant(ctx context.Context, req *core.RevokeGrantRequest) error {
+	if s.revokeGrant == nil {
+		return errors.New("unexpected revoke grant call")
+	}
 	return s.revokeGrant(ctx, req)
 }
 
 func (s *stubService) RevokeSession(ctx context.Context, req *core.RevokeSessionRequest) error {
+	if s.revokeSession == nil {
+		return errors.New("unexpected revoke session call")
+	}
 	return s.revokeSession(ctx, req)
 }
 
 func (s *stubService) ExecuteGitHubProxy(ctx context.Context, req *core.ExecuteGitHubProxyRequest) (*core.ExecuteGitHubProxyResponse, error) {
+	if s.executeGitHubProxy == nil {
+		return nil, errors.New("unexpected execute github proxy call")
+	}
 	return s.executeGitHubProxy(ctx, req)
 }
 
 func (s *stubService) RegisterBrowserRelay(ctx context.Context, req *core.RegisterBrowserRelayRequest) (*core.RegisterBrowserRelayResponse, error) {
+	if s.registerBrowserRelay == nil {
+		return nil, errors.New("unexpected register browser relay call")
+	}
 	return s.registerBrowserRelay(ctx, req)
 }
 
 func (s *stubService) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRequest) (*core.UnwrapArtifactResponse, error) {
+	if s.unwrapArtifact == nil {
+		return nil, errors.New("unexpected unwrap artifact call")
+	}
 	return s.unwrapArtifact(ctx, req)
 }
