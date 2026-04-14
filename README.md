@@ -311,7 +311,7 @@ The JSON API now applies per-IP rate limiting through the shared `service-runtim
 
 ### Metrics
 
-ASB now exposes Prometheus metrics on `/metrics` through the shared `service-runtime/observability` package. The initial slice covers HTTP request counters and request-latency histograms across the broker entrypoints.
+ASB now exposes Prometheus metrics on `/metrics` through the shared `service-runtime/observability` package. The current slice covers HTTP request counters and request-latency histograms across the broker entrypoints, plus Postgres pool gauges when `ASB_POSTGRES_DSN` is configured.
 
 ### Shared approval notifications
 

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -50,6 +51,7 @@ type ServiceRuntime struct {
 	Service *app.Service
 	Cleanup func()
 	Health  *HealthChecker
+	DBStats func() sql.DBStats
 }
 
 type HealthChecker struct {
@@ -96,7 +98,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 	if err != nil {
 		return nil, err
 	}
-	repository, cleanupRepository, postgresProbe, err := newRepository(ctx)
+	repository, cleanupRepository, postgresProbe, dbStats, err := newRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -266,6 +268,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 			redisProbe:         redisProbe,
 			sessionTokensReady: sessionTokens != nil,
 		},
+		DBStats: dbStats,
 	}, nil
 }
 
@@ -446,15 +449,15 @@ func newApprovalNotifier() (core.ApprovalNotifier, error) {
 	})
 }
 
-func newRepository(ctx context.Context) (core.Repository, func(), readinessProbe, error) {
+func newRepository(ctx context.Context) (core.Repository, func(), readinessProbe, func() sql.DBStats, error) {
 	if dsn := os.Getenv("ASB_POSTGRES_DSN"); dsn != "" {
 		pool, err := pgxpool.New(ctx, dsn)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
-		return postgresstore.NewRepository(pool), pool.Close, pool.Ping, nil
+		return postgresstore.NewRepository(pool), pool.Close, pool.Ping, pgxPoolDBStats(pool), nil
 	}
-	return memstore.NewRepository(), func() {}, nil, nil
+	return memstore.NewRepository(), func() {}, nil, nil, nil
 }
 
 func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessProbe, error) {
@@ -472,6 +475,21 @@ func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessP
 		}, nil
 	}
 	return memstore.NewRuntimeStore(), func() {}, nil, nil
+}
+
+func pgxPoolDBStats(pool *pgxpool.Pool) func() sql.DBStats {
+	if pool == nil {
+		return nil
+	}
+	return func() sql.DBStats {
+		stats := pool.Stat()
+		return sql.DBStats{
+			MaxOpenConnections: int(stats.MaxConns()),
+			OpenConnections:    int(stats.TotalConns()),
+			InUse:              int(stats.AcquiredConns()),
+			Idle:               int(stats.IdleConns()),
+		}
+	}
 }
 
 func loadPublicKey(path string) (any, error) {

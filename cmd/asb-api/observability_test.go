@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/evalops/asb/internal/bootstrap"
 	"github.com/evalops/service-runtime/observability"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -85,6 +87,49 @@ func TestNewObservedHandlerRecordsRequestMetrics(t *testing.T) {
 	}
 	if !strings.Contains(metricsBody, `asb_http_request_duration_seconds_count{method="GET",route="/v1/test",status="201"} 1`) {
 		t.Fatalf("metrics body = %q, want request duration sample", metricsBody)
+	}
+}
+
+func TestRegisterRuntimeMetricsRegistersDBStats(t *testing.T) {
+	t.Parallel()
+
+	registry := prometheus.NewRegistry()
+	runtime := &bootstrap.ServiceRuntime{
+		DBStats: func() sql.DBStats {
+			return sql.DBStats{
+				MaxOpenConnections: 8,
+				OpenConnections:    5,
+				InUse:              3,
+				Idle:               2,
+			}
+		},
+	}
+
+	if err := registerRuntimeMetrics(runtime, registry); err != nil {
+		t.Fatalf("registerRuntimeMetrics() error = %v", err)
+	}
+
+	metrics, err := observability.NewMetrics("asb", observability.MetricsOptions{
+		Registerer: registry,
+		Gatherer:   registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	handler := newObservedHandler(discardLogger(), metrics, http.NewServeMux())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "asb_db_open_connections 5") {
+		t.Fatalf("metrics body = %q, want open connection gauge", body)
+	}
+	if !strings.Contains(body, "asb_db_in_use_connections 3") {
+		t.Fatalf("metrics body = %q, want in-use connection gauge", body)
+	}
+	if !strings.Contains(body, "asb_db_idle_connections 2") {
+		t.Fatalf("metrics body = %q, want idle connection gauge", body)
 	}
 }
 

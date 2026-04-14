@@ -14,6 +14,7 @@ import (
 	"github.com/evalops/asb/internal/bootstrap"
 	"github.com/evalops/service-runtime/observability"
 	"github.com/evalops/service-runtime/ratelimit"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func main() {
@@ -37,6 +38,10 @@ func main() {
 	metrics, err := observability.NewMetrics("asb", observability.MetricsOptions{})
 	if err != nil {
 		logger.Error("initialize metrics", "error", err)
+		os.Exit(1)
+	}
+	if err := registerRuntimeMetrics(runtime, prometheus.DefaultRegisterer); err != nil {
+		logger.Error("register runtime metrics", "error", err)
 		os.Exit(1)
 	}
 
