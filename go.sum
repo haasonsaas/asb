@@ -17,8 +17,8 @@ github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/r
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
 github.com/evalops/proto v0.0.0-20260414000509-37b2bf5d6244 h1:MjoKPIxG/OisQLDqLvbvpleCAkPgr2InTrK4Q0D9F1o=
 github.com/evalops/proto v0.0.0-20260414000509-37b2bf5d6244/go.mod h1:EXB8IcqMaV58Tt0w2GaQia3YOwzrEvnIWFZetHX+IxE=
-github.com/evalops/service-runtime v0.1.16 h1:pgxFcQep8t7p6sanvTWvu9nxy0lKeaeOZlDqHvIAlQY=
-github.com/evalops/service-runtime v0.1.16/go.mod h1:ZAB9GcnbFaFUq+X5TsoMUUth6KnAVR6uVHMKanXtQTY=
+github.com/evalops/service-runtime v0.1.17 h1:Elnn2Z+qLoxweauNikJQnQKt/0smEEdzOc0qQCqxo5g=
+github.com/evalops/service-runtime v0.1.17/go.mod h1:ZAB9GcnbFaFUq+X5TsoMUUth6KnAVR6uVHMKanXtQTY=
 github.com/go-chi/chi/v5 v5.2.5 h1:Eg4myHZBjyvJmAFjFvWgrqDTXFyOzjj7YIm3L3mu6Ug=
 github.com/go-chi/chi/v5 v5.2.5/go.mod h1:X7Gx4mteadT3eDOMTsXzmI4/rwUpOwBHLpAfupzFJP0=
 github.com/golang-jwt/jwt/v5 v5.2.2 h1:Rl4B7itRWVtYIHFrSNd7vhTiz9UpLdi6gZhZ3wEeDy8=

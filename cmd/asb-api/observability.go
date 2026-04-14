@@ -27,10 +27,22 @@ func newObservedHandler(logger *slog.Logger, metrics *observability.Metrics, nex
 }
 
 func registerRuntimeMetrics(runtime *bootstrap.ServiceRuntime, registerer prometheus.Registerer) error {
-	if runtime == nil || runtime.DBStats == nil {
+	if runtime == nil {
 		return nil
 	}
-	return observability.RegisterDBStats("asb", runtime.DBStats, observability.DBStatsOptions{
-		Registerer: registerer,
-	})
+	if runtime.DBStats != nil {
+		if err := observability.RegisterDBStats("asb", runtime.DBStats, observability.DBStatsOptions{
+			Registerer: registerer,
+		}); err != nil {
+			return err
+		}
+	}
+	if runtime.RedisStats != nil {
+		if err := observability.RegisterRedisPoolStats("asb", runtime.RedisStats, observability.RedisStatsOptions{
+			Registerer: registerer,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

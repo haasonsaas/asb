@@ -48,10 +48,11 @@ type serviceOptions struct {
 type readinessProbe func(context.Context) error
 
 type ServiceRuntime struct {
-	Service *app.Service
-	Cleanup func()
-	Health  *HealthChecker
-	DBStats func() sql.DBStats
+	Service    *app.Service
+	Cleanup    func()
+	Health     *HealthChecker
+	DBStats    func() sql.DBStats
+	RedisStats func() *goredis.PoolStats
 }
 
 type HealthChecker struct {
@@ -102,7 +103,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 	if err != nil {
 		return nil, err
 	}
-	runtimeStore, cleanupRuntime, redisProbe, err := newRuntimeStore(ctx)
+	runtimeStore, cleanupRuntime, redisProbe, redisStats, err := newRuntimeStore(ctx)
 	if err != nil {
 		cleanupRepository()
 		return nil, err
@@ -268,7 +269,8 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 			redisProbe:         redisProbe,
 			sessionTokensReady: sessionTokens != nil,
 		},
-		DBStats: dbStats,
+		DBStats:    dbStats,
+		RedisStats: redisStats,
 	}, nil
 }
 
@@ -460,7 +462,7 @@ func newRepository(ctx context.Context) (core.Repository, func(), readinessProbe
 	return memstore.NewRepository(), func() {}, nil, nil, nil
 }
 
-func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessProbe, error) {
+func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessProbe, func() *goredis.PoolStats, error) {
 	if addr := os.Getenv("ASB_REDIS_ADDR"); addr != "" {
 		client := goredis.NewClient(&goredis.Options{
 			Addr:     addr,
@@ -468,13 +470,13 @@ func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessP
 			DB:       0,
 		})
 		if err := client.Ping(ctx).Err(); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		return redisstore.NewRuntimeStore(client), func() { _ = client.Close() }, func(ctx context.Context) error {
 			return client.Ping(ctx).Err()
-		}, nil
+		}, redisPoolStats(client), nil
 	}
-	return memstore.NewRuntimeStore(), func() {}, nil, nil
+	return memstore.NewRuntimeStore(), func() {}, nil, nil, nil
 }
 
 func pgxPoolDBStats(pool *pgxpool.Pool) func() sql.DBStats {
@@ -490,6 +492,13 @@ func pgxPoolDBStats(pool *pgxpool.Pool) func() sql.DBStats {
 			Idle:               int(stats.IdleConns()),
 		}
 	}
+}
+
+func redisPoolStats(client goredis.UniversalClient) func() *goredis.PoolStats {
+	if client == nil {
+		return nil
+	}
+	return client.PoolStats
 }
 
 func loadPublicKey(path string) (any, error) {

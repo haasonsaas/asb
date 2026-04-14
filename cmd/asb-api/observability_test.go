@@ -12,6 +12,7 @@ import (
 	"github.com/evalops/asb/internal/bootstrap"
 	"github.com/evalops/service-runtime/observability"
 	"github.com/prometheus/client_golang/prometheus"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 func TestNewObservedHandlerServesMetrics(t *testing.T) {
@@ -130,6 +131,49 @@ func TestRegisterRuntimeMetricsRegistersDBStats(t *testing.T) {
 	}
 	if !strings.Contains(body, "asb_db_idle_connections 2") {
 		t.Fatalf("metrics body = %q, want idle connection gauge", body)
+	}
+}
+
+func TestRegisterRuntimeMetricsRegistersRedisStats(t *testing.T) {
+	t.Parallel()
+
+	registry := prometheus.NewRegistry()
+	runtime := &bootstrap.ServiceRuntime{
+		RedisStats: func() *goredis.PoolStats {
+			return &goredis.PoolStats{
+				Hits:            11,
+				TotalConns:      5,
+				IdleConns:       2,
+				PendingRequests: 1,
+			}
+		},
+	}
+
+	if err := registerRuntimeMetrics(runtime, registry); err != nil {
+		t.Fatalf("registerRuntimeMetrics() error = %v", err)
+	}
+
+	metrics, err := observability.NewMetrics("asb", observability.MetricsOptions{
+		Registerer: registry,
+		Gatherer:   registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	handler := newObservedHandler(discardLogger(), metrics, http.NewServeMux())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "asb_redis_pool_total_connections 5") {
+		t.Fatalf("metrics body = %q, want Redis total connection gauge", body)
+	}
+	if !strings.Contains(body, "asb_redis_pool_idle_connections 2") {
+		t.Fatalf("metrics body = %q, want Redis idle connection gauge", body)
+	}
+	if !strings.Contains(body, "asb_redis_pool_hits_total 11") {
+		t.Fatalf("metrics body = %q, want Redis hits counter", body)
 	}
 }
 
