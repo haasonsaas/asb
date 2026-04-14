@@ -10,6 +10,8 @@ import (
 
 	"github.com/evalops/asb/internal/app"
 	"github.com/evalops/asb/internal/worker"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestRunner_RunOnce(t *testing.T) {
@@ -38,6 +40,54 @@ func TestRunner_RunOnce(t *testing.T) {
 	}
 	if stats.GrantsExpired != 3 {
 		t.Fatalf("stats = %#v, want grants expired = 3", stats)
+	}
+}
+
+func TestRunner_RunOnceRecordsMetrics(t *testing.T) {
+	t.Parallel()
+
+	registry := prometheus.NewRegistry()
+	metrics, err := worker.NewMetrics("asb", worker.MetricsOptions{
+		Registerer: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	service := &fakeCleanupService{
+		stats: &app.CleanupStats{
+			ApprovalsExpired: 1,
+			SessionsExpired:  2,
+			GrantsExpired:    3,
+			ArtifactsExpired: 4,
+		},
+	}
+	runner := worker.NewRunner(worker.Config{
+		Service: service,
+		Limit:   50,
+		Logger:  slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Metrics: metrics,
+	})
+
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+
+	families := mustGatherMetrics(t, registry)
+	if got := metricValueWithLabels(families, "asb_cleanup_processed_total", map[string]string{"item_type": "approvals"}); got != 1 {
+		t.Fatalf("approval cleanup count = %v, want 1", got)
+	}
+	if got := metricValueWithLabels(families, "asb_cleanup_processed_total", map[string]string{"item_type": "sessions"}); got != 2 {
+		t.Fatalf("session cleanup count = %v, want 2", got)
+	}
+	if got := metricValueWithLabels(families, "asb_cleanup_processed_total", map[string]string{"item_type": "grants"}); got != 3 {
+		t.Fatalf("grant cleanup count = %v, want 3", got)
+	}
+	if got := metricValueWithLabels(families, "asb_cleanup_processed_total", map[string]string{"item_type": "artifacts"}); got != 4 {
+		t.Fatalf("artifact cleanup count = %v, want 4", got)
+	}
+	if got := histogramCountWithLabels(families, "asb_cleanup_pass_seconds", nil); got != 1 {
+		t.Fatalf("cleanup pass histogram count = %d, want 1", got)
 	}
 }
 
@@ -137,4 +187,64 @@ type testWriter struct{ t *testing.T }
 func (w testWriter) Write(p []byte) (int, error) {
 	w.t.Log(string(p))
 	return len(p), nil
+}
+
+func mustGatherMetrics(t *testing.T, gatherer prometheus.Gatherer) []*dto.MetricFamily {
+	t.Helper()
+
+	families, err := gatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error = %v", err)
+	}
+	return families
+}
+
+func metricValueWithLabels(metricFamilies []*dto.MetricFamily, name string, labels map[string]string) float64 {
+	for _, family := range metricFamilies {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.Metric {
+			if !metricMatchesLabels(metric, labels) {
+				continue
+			}
+			switch family.GetType() {
+			case dto.MetricType_COUNTER:
+				return metric.GetCounter().GetValue()
+			case dto.MetricType_GAUGE:
+				return metric.GetGauge().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+func histogramCountWithLabels(metricFamilies []*dto.MetricFamily, name string, labels map[string]string) uint64 {
+	for _, family := range metricFamilies {
+		if family.GetName() != name || family.GetType() != dto.MetricType_HISTOGRAM {
+			continue
+		}
+		for _, metric := range family.Metric {
+			if metricMatchesLabels(metric, labels) {
+				return metric.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}
+
+func metricMatchesLabels(metric *dto.Metric, labels map[string]string) bool {
+	if len(labels) == 0 {
+		return true
+	}
+	values := make(map[string]string, len(metric.Label))
+	for _, label := range metric.Label {
+		values[label.GetName()] = label.GetValue()
+	}
+	for key, want := range labels {
+		if values[key] != want {
+			return false
+		}
+	}
+	return true
 }

@@ -18,6 +18,7 @@ type Config struct {
 	Interval time.Duration
 	Limit    int
 	Logger   *slog.Logger
+	Metrics  *Metrics
 }
 
 type Runner struct {
@@ -25,6 +26,7 @@ type Runner struct {
 	interval time.Duration
 	limit    int
 	logger   *slog.Logger
+	metrics  *Metrics
 }
 
 func NewRunner(cfg Config) *Runner {
@@ -42,6 +44,7 @@ func NewRunner(cfg Config) *Runner {
 		interval: cfg.Interval,
 		limit:    cfg.Limit,
 		logger:   cfg.Logger,
+		metrics:  cfg.Metrics,
 	}
 }
 
@@ -49,10 +52,12 @@ func (r *Runner) RunOnce(ctx context.Context) (*app.CleanupStats, error) {
 	if r.service == nil {
 		return nil, fmt.Errorf("cleanup service is required")
 	}
+	startedAt := time.Now()
 	stats, err := r.service.RunCleanupOnce(ctx, r.limit)
 	if err != nil {
 		return nil, err
 	}
+	r.metrics.recordCleanupPass(stats, time.Since(startedAt))
 	r.logger.Info("worker cleanup complete",
 		"approvals_expired", stats.ApprovalsExpired,
 		"sessions_expired", stats.SessionsExpired,
