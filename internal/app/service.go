@@ -665,6 +665,8 @@ func (s *Service) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRe
 	if err != nil {
 		return nil, fmt.Errorf("unwrap artifact %q: mark artifact used: %w", req.ArtifactID, err)
 	}
+	s.metrics.recordArtifactTransition(artifact.State, usedArtifact.State, usedArtifact.ConnectorKind)
+	s.metrics.recordArtifactUnwrap(usedArtifact.ConnectorKind)
 
 	fields := make([]core.BrowserFillField, 0, len(usedArtifact.SecretData))
 	if artifact.ConnectorKind == "browser" {
@@ -754,6 +756,7 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 	if err := s.repo.SaveArtifact(ctx, storedArtifact); err != nil {
 		return nil, fmt.Errorf("issue grant %q: save artifact %q: %w", grant.ID, storedArtifact.ID, err)
 	}
+	s.metrics.recordArtifactCreated(storedArtifact.ConnectorKind)
 	if delivery.Handle != "" && s.runtime != nil {
 		if err := s.runtime.RegisterProxyHandle(ctx, delivery.Handle, budgetFromMetadata(artifact.Metadata), artifact.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("issue grant %q: register proxy handle %q: %w", grant.ID, delivery.Handle, err)

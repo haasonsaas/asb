@@ -19,14 +19,16 @@ type MetricsOptions struct {
 
 // Metrics records ASB domain-level counters, gauges, and histograms.
 type Metrics struct {
-	sessionsActive *prometheus.GaugeVec
-	sessionsTotal  *prometheus.CounterVec
-	grantsTotal    *prometheus.CounterVec
-	grantTTL       prometheus.Histogram
-	approvalsTotal *prometheus.CounterVec
-	approvalWait   *prometheus.HistogramVec
-	policyEval     *prometheus.CounterVec
-	budgetExhaust  *prometheus.CounterVec
+	sessionsActive  *prometheus.GaugeVec
+	sessionsTotal   *prometheus.CounterVec
+	grantsTotal     *prometheus.CounterVec
+	grantTTL        prometheus.Histogram
+	approvalsTotal  *prometheus.CounterVec
+	approvalWait    *prometheus.HistogramVec
+	policyEval      *prometheus.CounterVec
+	budgetExhaust   *prometheus.CounterVec
+	artifactsActive *prometheus.GaugeVec
+	artifactUnwraps *prometheus.CounterVec
 }
 
 // NewMetrics creates Prometheus collectors for ASB domain metrics.
@@ -147,15 +149,45 @@ func NewMetrics(serviceName string, opts MetricsOptions) (*Metrics, error) {
 		return nil, err
 	}
 
+	artifactsActive, err := registerGaugeVec(
+		opts.Registerer,
+		prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: prefix + "_artifacts_active",
+				Help: "Current number of active ASB artifacts by connector kind.",
+			},
+			[]string{"connector_kind"},
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	artifactUnwraps, err := registerCounterVec(
+		opts.Registerer,
+		prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefix + "_artifact_unwraps_total",
+				Help: "Count of ASB artifact unwrap operations by connector kind.",
+			},
+			[]string{"connector_kind"},
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Metrics{
-		sessionsActive: sessionsActive,
-		sessionsTotal:  sessionsTotal,
-		grantsTotal:    grantsTotal,
-		grantTTL:       grantTTL,
-		approvalsTotal: approvalsTotal,
-		approvalWait:   approvalWait,
-		policyEval:     policyEval,
-		budgetExhaust:  budgetExhaust,
+		sessionsActive:  sessionsActive,
+		sessionsTotal:   sessionsTotal,
+		grantsTotal:     grantsTotal,
+		grantTTL:        grantTTL,
+		approvalsTotal:  approvalsTotal,
+		approvalWait:    approvalWait,
+		policyEval:      policyEval,
+		budgetExhaust:   budgetExhaust,
+		artifactsActive: artifactsActive,
+		artifactUnwraps: artifactUnwraps,
 	}, nil
 }
 
@@ -239,6 +271,32 @@ func (metrics *Metrics) recordBudgetExhaustion(handle string) {
 		return
 	}
 	metrics.budgetExhaust.WithLabelValues(labelOrUnknown(handle)).Inc()
+}
+
+func (metrics *Metrics) recordArtifactCreated(connectorKind string) {
+	if metrics == nil {
+		return
+	}
+	metrics.artifactsActive.WithLabelValues(labelOrUnknown(connectorKind)).Inc()
+}
+
+func (metrics *Metrics) recordArtifactTransition(previous, next core.ArtifactState, connectorKind string) {
+	if metrics == nil || previous == next {
+		return
+	}
+	if previous == core.ArtifactStateIssued {
+		metrics.artifactsActive.WithLabelValues(labelOrUnknown(connectorKind)).Dec()
+	}
+	if next == core.ArtifactStateIssued {
+		metrics.artifactsActive.WithLabelValues(labelOrUnknown(connectorKind)).Inc()
+	}
+}
+
+func (metrics *Metrics) recordArtifactUnwrap(connectorKind string) {
+	if metrics == nil {
+		return
+	}
+	metrics.artifactUnwraps.WithLabelValues(labelOrUnknown(connectorKind)).Inc()
 }
 
 func labelOrUnknown(value string) string {

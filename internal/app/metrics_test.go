@@ -123,6 +123,9 @@ func TestServiceMetrics_CreateSessionAndIssueGrant(t *testing.T) {
 	if got := metricValueWithLabels(families, "asb_grants_total", map[string]string{"outcome": "issued"}); got != 1 {
 		t.Fatalf("issued grants = %v, want 1", got)
 	}
+	if got := metricValueWithLabels(families, "asb_artifacts_active", map[string]string{"connector_kind": "github"}); got != 1 {
+		t.Fatalf("active github artifacts = %v, want 1", got)
+	}
 	if got := histogramCountWithLabels(families, "asb_grant_ttl_seconds", nil); got != 1 {
 		t.Fatalf("grant TTL histogram count = %d, want 1", got)
 	}
@@ -369,6 +372,9 @@ func TestServiceMetrics_RevokeSession(t *testing.T) {
 	}
 	if got := metricValueWithLabels(families, "asb_grants_total", map[string]string{"outcome": "revoked"}); got != 1 {
 		t.Fatalf("revoked grants = %v, want 1", got)
+	}
+	if got := metricValueWithLabels(families, "asb_artifacts_active", map[string]string{"connector_kind": "github"}); got != 0 {
+		t.Fatalf("active github artifacts = %v, want 0", got)
 	}
 	grant, err := repo.GetGrant(ctx, grantResp.GrantID)
 	if err != nil {
@@ -658,6 +664,118 @@ func TestServiceMetrics_BudgetExhaustion(t *testing.T) {
 	families := mustGatherMetrics(t, registry)
 	if got := metricValueWithLabels(families, "asb_budget_exhaustion_total", map[string]string{"handle": "ph_budget_metrics"}); got != 1 {
 		t.Fatalf("budget exhaustion count = %v, want 1", got)
+	}
+}
+
+func TestServiceMetrics_UnwrapArtifact(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	registry := prometheus.NewRegistry()
+	metrics, err := app.NewMetrics("asb", app.MetricsOptions{
+		Registerer: registry,
+	})
+	if err != nil {
+		t.Fatalf("NewMetrics() error = %v", err)
+	}
+
+	repo := memstore.NewRepository()
+	tools := toolregistry.New()
+	engine := policy.NewEngine()
+	signer := mustNewSigner(t)
+	connector := &fakeConnector{
+		kind: "vaultdb",
+		issued: &core.IssuedArtifact{
+			Kind: core.ArtifactKindWrappedSecret,
+			SecretData: map[string]string{
+				"username": "readonly",
+				"password": "redacted",
+			},
+		},
+	}
+	delivery := &fakeDeliveryAdapter{
+		mode: core.DeliveryModeWrappedSecret,
+		delivery: &core.Delivery{
+			Kind:       core.DeliveryKindWrappedSecret,
+			ArtifactID: "art_unwrap_metrics",
+		},
+	}
+
+	mustPutTool(t, ctx, tools, core.Tool{
+		TenantID:             "t_acme",
+		Tool:                 "vaultdb",
+		ManifestHash:         "sha256:vaultdb",
+		RuntimeClass:         core.RuntimeClassHosted,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeWrappedSecret},
+		AllowedCapabilities:  []string{"db.read"},
+		TrustTags:            []string{"trusted", "db"},
+	})
+	mustPutPolicy(t, engine, core.Policy{
+		TenantID:             "t_acme",
+		Capability:           "db.read",
+		ResourceKind:         core.ResourceKindDBRole,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeWrappedSecret},
+		DefaultTTL:           10 * time.Minute,
+		MaxTTL:               10 * time.Minute,
+		ApprovalMode:         core.ApprovalModeNone,
+		RequiredToolTags:     []string{"trusted", "db"},
+		Condition:            `true`,
+	})
+
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		IDs:           fixedIDs("sess_unwrap_metrics", "evt_1", "gr_unwrap_metrics", "art_unwrap_metrics", "evt_2", "evt_3", "evt_4"),
+		Metrics:       metrics,
+		Repository:    repo,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: signer,
+		Policy:        engine,
+		Tools:         tools,
+		Connectors:    fakeConnectorResolver{connector: connector},
+		Deliveries: map[core.DeliveryMode]core.DeliveryAdapter{
+			core.DeliveryModeWrappedSecret: delivery,
+		},
+		Audit: memory.NewSink(),
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	sessionResp, err := svc.CreateSession(ctx, &core.CreateSessionRequest{
+		TenantID:    "t_acme",
+		AgentID:     "agent_db_reader",
+		RunID:       "run_unwrap_metrics",
+		ToolContext: []string{"vaultdb"},
+		Attestation: &core.Attestation{Kind: core.AttestationKindK8SServiceAccountJWT, Token: "jwt"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	grantResp, err := svc.RequestGrant(ctx, &core.RequestGrantRequest{
+		SessionToken: sessionResp.SessionToken,
+		Tool:         "vaultdb",
+		Capability:   "db.read",
+		ResourceRef:  "dbrole:analytics_readonly",
+		DeliveryMode: core.DeliveryModeWrappedSecret,
+	})
+	if err != nil {
+		t.Fatalf("RequestGrant() error = %v", err)
+	}
+
+	if _, err := svc.UnwrapArtifact(ctx, &core.UnwrapArtifactRequest{
+		SessionToken: sessionResp.SessionToken,
+		ArtifactID:   grantResp.Delivery.ArtifactID,
+	}); err != nil {
+		t.Fatalf("UnwrapArtifact() error = %v", err)
+	}
+
+	families := mustGatherMetrics(t, registry)
+	if got := metricValueWithLabels(families, "asb_artifacts_active", map[string]string{"connector_kind": "vaultdb"}); got != 0 {
+		t.Fatalf("active vaultdb artifacts = %v, want 0", got)
+	}
+	if got := metricValueWithLabels(families, "asb_artifact_unwraps_total", map[string]string{"connector_kind": "vaultdb"}); got != 1 {
+		t.Fatalf("vaultdb unwrap count = %v, want 1", got)
 	}
 }
 

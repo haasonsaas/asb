@@ -65,10 +65,12 @@ func (s *Service) RunCleanupOnce(ctx context.Context, limit int) (*CleanupStats,
 		if artifact.State == core.ArtifactStateExpired {
 			continue
 		}
+		previousState := artifact.State
 		artifact.State = core.ArtifactStateExpired
 		if err := s.repo.SaveArtifact(ctx, artifact); err != nil {
 			return nil, fmt.Errorf("run cleanup: save expired artifact %q: %w", artifact.ID, err)
 		}
+		s.metrics.recordArtifactTransition(previousState, artifact.State, artifact.ConnectorKind)
 		stats.ArtifactsExpired++
 		s.appendAudit(ctx, &core.AuditEvent{
 			EventID:   s.ids.New("evt"),
@@ -193,6 +195,7 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 	s.metrics.recordGrantTransition(grant.State)
 
 	if artifact != nil {
+		previousState := artifact.State
 		switch state {
 		case core.GrantStateRevoked:
 			artifact.State = core.ArtifactStateRevoked
@@ -204,6 +207,7 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 		if err := s.repo.SaveArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("transition grant %q to %q: save artifact %q: %w", grant.ID, state, artifact.ID, err)
 		}
+		s.metrics.recordArtifactTransition(previousState, artifact.State, artifact.ConnectorKind)
 	}
 
 	eventType := ""
