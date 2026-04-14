@@ -22,9 +22,18 @@ func main() {
 	}
 	defer cleanup()
 
-	addr := getenv("ASB_ADDR", ":8080")
+	cfg, err := loadServerConfig()
+	if err != nil {
+		logger.Error("load server config", "error", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", httpapi.NewServer(svc))
+	mux.Handle("/v1/", httpapi.NewServer(
+		svc,
+		httpapi.WithMaxBodyBytes(cfg.maxBodyBytes),
+		httpapi.WithRequestTimeouts(cfg.defaultTimeout, cfg.grantTimeout, cfg.proxyTimeout),
+	))
 	connectPath, connectHandler := connectapi.NewHandler(svc)
 	mux.Handle(connectPath, connectHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -32,8 +41,25 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	logger.Info("starting asb api", "addr", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{
+		Addr:         cfg.addr,
+		Handler:      mux,
+		ReadTimeout:  cfg.readTimeout,
+		WriteTimeout: cfg.writeTimeout,
+		IdleTimeout:  cfg.idleTimeout,
+	}
+
+	logger.Info("starting asb api",
+		"addr", cfg.addr,
+		"max_body_bytes", cfg.maxBodyBytes,
+		"read_timeout", cfg.readTimeout,
+		"write_timeout", cfg.writeTimeout,
+		"idle_timeout", cfg.idleTimeout,
+		"default_timeout", cfg.defaultTimeout,
+		"grant_timeout", cfg.grantTimeout,
+		"proxy_timeout", cfg.proxyTimeout,
+	)
+	if err := server.ListenAndServe(); err != nil {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}
