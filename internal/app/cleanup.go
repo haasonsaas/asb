@@ -91,6 +91,7 @@ func (s *Service) expireApproval(ctx context.Context, approval *core.Approval) e
 	if err := s.repo.SaveApproval(ctx, approval); err != nil {
 		return fmt.Errorf("expire approval %q: save approval: %w", approval.ID, err)
 	}
+	s.metrics.recordApprovalTransition(approval.State, s.clock.Now().Sub(approval.CreatedAt))
 
 	grant, err := s.repo.GetGrant(ctx, approval.GrantID)
 	if err != nil {
@@ -101,6 +102,7 @@ func (s *Service) expireApproval(ctx context.Context, approval *core.Approval) e
 		if err := s.repo.SaveGrant(ctx, grant); err != nil {
 			return fmt.Errorf("expire approval %q: save expired grant %q: %w", approval.ID, grant.ID, err)
 		}
+		s.metrics.recordGrantTransition(grant.State)
 	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
@@ -136,6 +138,7 @@ func (s *Service) expireSession(ctx context.Context, session *core.Session, stat
 	if err := s.repo.SaveSession(ctx, session); err != nil {
 		return fmt.Errorf("expire session %q: save session: %w", session.ID, err)
 	}
+	s.metrics.recordSessionTransition(core.SessionStateActive, session.State, session.TenantID)
 	stats.SessionsExpired++
 	s.appendAudit(ctx, &core.AuditEvent{
 		EventID:   s.ids.New("evt"),
@@ -187,6 +190,7 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
 		return fmt.Errorf("transition grant %q to %q: save grant: %w", grant.ID, state, err)
 	}
+	s.metrics.recordGrantTransition(grant.State)
 
 	if artifact != nil {
 		switch state {

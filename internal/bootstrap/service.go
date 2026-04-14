@@ -36,6 +36,7 @@ import (
 	redisstore "github.com/evalops/asb/internal/store/redis"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -233,6 +234,14 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 		cleanupRepository()
 		return nil, err
 	}
+	metrics, err := app.NewMetrics("asb", app.MetricsOptions{
+		Registerer: prometheus.DefaultRegisterer,
+	})
+	if err != nil {
+		cleanupRuntime()
+		cleanupRepository()
+		return nil, err
+	}
 
 	svc, err := app.NewService(app.Config{
 		Logger:              logger,
@@ -240,6 +249,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 		Verifier:            verifier,
 		DelegationValidator: delegationValidator,
 		SessionTokens:       sessionTokens,
+		Metrics:             metrics,
 		Policy:              engine,
 		Tools:               tools,
 		Connectors:          resolver.NewStaticResolver(connectorOptions...),

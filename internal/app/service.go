@@ -24,6 +24,7 @@ type Config struct {
 	Logger              *slog.Logger
 	Clock               core.Clock
 	IDs                 core.IDGenerator
+	Metrics             *Metrics
 	Repository          core.Repository
 	Verifier            core.AttestationVerifier
 	DelegationValidator core.DelegationValidator
@@ -42,6 +43,7 @@ type Service struct {
 	logger              *slog.Logger
 	clock               core.Clock
 	ids                 core.IDGenerator
+	metrics             *Metrics
 	repo                core.Repository
 	verifier            core.AttestationVerifier
 	delegationValidator core.DelegationValidator
@@ -77,6 +79,7 @@ func NewService(cfg Config) (*Service, error) {
 		logger:              cfg.Logger,
 		clock:               cfg.Clock,
 		ids:                 cfg.IDs,
+		metrics:             cfg.Metrics,
 		repo:                cfg.Repository,
 		verifier:            cfg.Verifier,
 		delegationValidator: cfg.DelegationValidator,
@@ -130,6 +133,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 	if err := s.repo.SaveSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("create session %q: save session: %w", session.ID, err)
 	}
+	s.metrics.recordSessionCreated(session.TenantID)
 
 	if delegation != nil {
 		s.appendAudit(ctx, &core.AuditEvent{
@@ -262,6 +266,7 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 		if err := s.repo.SaveApproval(ctx, approval); err != nil {
 			return nil, fmt.Errorf("request grant %q: save pending approval %q: %w", grant.ID, approval.ID, err)
 		}
+		s.metrics.recordGrantCreated(grant.State, grant.EffectiveTTL)
 		s.appendAudit(ctx, &core.AuditEvent{
 			EventID:     s.ids.New("evt"),
 			TenantID:    session.TenantID,
@@ -312,6 +317,7 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 		if err := s.repo.SaveApproval(ctx, approval); err != nil {
 			return nil, fmt.Errorf("approve grant via approval %q: expire approval: %w", req.ApprovalID, err)
 		}
+		s.metrics.recordApprovalTransition(approval.State, s.clock.Now().Sub(approval.CreatedAt))
 		return nil, fmt.Errorf("%w: approval expired", core.ErrForbidden)
 	}
 
@@ -331,6 +337,7 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 	if err := s.repo.SaveApproval(ctx, approval); err != nil {
 		return nil, fmt.Errorf("approve grant %q: save approved approval %q: %w", grant.ID, approval.ID, err)
 	}
+	s.metrics.recordApprovalTransition(approval.State, s.clock.Now().Sub(approval.CreatedAt))
 
 	s.appendAudit(ctx, &core.AuditEvent{
 		EventID:   s.ids.New("evt"),
@@ -383,6 +390,8 @@ func (s *Service) DenyGrant(ctx context.Context, req *core.DenyGrantRequest) err
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
 		return fmt.Errorf("deny grant %q: save denied grant: %w", grant.ID, err)
 	}
+	s.metrics.recordApprovalTransition(approval.State, s.clock.Now().Sub(approval.CreatedAt))
+	s.metrics.recordGrantTransition(grant.State)
 
 	s.appendAudit(ctx, &core.AuditEvent{
 		EventID:   s.ids.New("evt"),
@@ -423,10 +432,12 @@ func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequ
 	if err != nil {
 		return fmt.Errorf("revoke session %q: load session: %w", req.SessionID, err)
 	}
+	previousState := session.State
 	session.State = core.SessionStateRevoked
 	if err := s.repo.SaveSession(ctx, session); err != nil {
 		return fmt.Errorf("revoke session %q: save session: %w", session.ID, err)
 	}
+	s.metrics.recordSessionTransition(previousState, session.State, session.TenantID)
 
 	grants, err := s.repo.ListGrantsBySession(ctx, req.SessionID)
 	if err != nil {
@@ -743,6 +754,11 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 	if err := s.repo.SaveGrant(ctx, grant); err != nil {
 		return nil, fmt.Errorf("issue grant %q: save issued grant: %w", grant.ID, err)
 	}
+	if grant.ApprovalID != nil {
+		s.metrics.recordGrantTransition(grant.State)
+	} else {
+		s.metrics.recordGrantCreated(grant.State, grant.EffectiveTTL)
+	}
 
 	s.appendAudit(ctx, &core.AuditEvent{
 		EventID:     s.ids.New("evt"),
@@ -796,10 +812,12 @@ func (s *Service) loadActiveSession(ctx context.Context, raw string) (*core.Sess
 		return nil, nil, fmt.Errorf("%w: session is not active", core.ErrForbidden)
 	}
 	if s.clock.Now().After(session.ExpiresAt) {
+		previousState := session.State
 		session.State = core.SessionStateExpired
 		if err := s.repo.SaveSession(ctx, session); err != nil {
 			return nil, nil, fmt.Errorf("load active session %q: expire session: %w", session.ID, err)
 		}
+		s.metrics.recordSessionTransition(previousState, session.State, session.TenantID)
 		return nil, nil, fmt.Errorf("%w: session expired", core.ErrForbidden)
 	}
 	return session, claims, nil
