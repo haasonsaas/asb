@@ -91,6 +91,26 @@ func TestNewObservedHandlerRecordsRequestMetrics(t *testing.T) {
 	}
 }
 
+func TestNewObservedHandlerAllowsNilMetrics(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/test", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	handler := newObservedHandler(discardLogger(), nil, mux)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/test", nil))
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+	if got := recorder.Header().Get("X-Request-Id"); got == "" {
+		t.Fatal("expected X-Request-Id response header")
+	}
+}
+
 func TestRegisterRuntimeMetricsRegistersDBStats(t *testing.T) {
 	t.Parallel()
 

@@ -11,10 +11,10 @@ import (
 )
 
 func newObservedHandler(logger *slog.Logger, metrics *observability.Metrics, next http.Handler) http.Handler {
-	observed := httpkit.WithRequestID(observability.RequestLoggingMiddleware(logger, metrics)(next))
 	if metrics == nil {
-		return observed
+		return httpkit.WithRequestID(next)
 	}
+	observed := httpkit.WithRequestID(observability.RequestLoggingMiddleware(logger, metrics)(next))
 
 	metricsHandler := metrics.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
