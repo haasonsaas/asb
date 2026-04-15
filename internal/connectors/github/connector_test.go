@@ -89,3 +89,30 @@ func TestConnector_IssueAllowsConfiguredWriteOperations(t *testing.T) {
 		t.Fatalf("operations = %q, want configured write allowlist", got)
 	}
 }
+
+func TestConnector_FallsBackToDefaultOperationsWhenNormalizationDropsAllInputs(t *testing.T) {
+	t.Parallel()
+
+	connector := github.NewConnector(github.Config{
+		AllowedOperations: []string{"unknown"},
+	})
+
+	issued, err := connector.Issue(context.Background(), core.IssueRequest{
+		Session: &core.Session{ID: "sess_default", TenantID: "t_acme"},
+		Grant: &core.Grant{
+			ID:           "gr_default",
+			DeliveryMode: core.DeliveryModeProxy,
+			ExpiresAt:    time.Date(2026, 3, 12, 20, 10, 0, 0, time.UTC),
+		},
+		Resource: core.ResourceDescriptor{
+			Kind: core.ResourceKindGitHubRepo,
+			Name: "acme/widgets",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if got := issued.Metadata["operations"]; got != "pull_request_metadata,pull_request_files,repository_metadata,repository_issues" {
+		t.Fatalf("operations = %q, want default allowlist", got)
+	}
+}

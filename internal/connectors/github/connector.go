@@ -21,7 +21,7 @@ type Connector struct {
 
 func NewConnector(cfg Config) *Connector {
 	operations := normalizeOperations(cfg.AllowedOperations)
-	if len(cfg.AllowedOperations) == 0 {
+	if len(operations) == 0 {
 		operations = append([]string(nil), defaultOperations...)
 	}
 	budget := cfg.Budget
