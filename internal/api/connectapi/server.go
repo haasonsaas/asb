@@ -217,6 +217,8 @@ func connectError(err error) error {
 	switch {
 	case errors.Is(err, core.ErrInvalidRequest):
 		code = connect.CodeInvalidArgument
+	case errors.Is(err, core.ErrDeliveryModeNotImplemented):
+		code = connect.CodeUnimplemented
 	case errors.Is(err, core.ErrUnauthorized):
 		code = connect.CodeUnauthenticated
 	case errors.Is(err, core.ErrForbidden):

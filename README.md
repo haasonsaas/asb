@@ -138,7 +138,7 @@ A static resolver routes capability and resource kind to the appropriate connect
 
 - **`proxy`**: the broker executes the downstream call and the agent only receives an opaque handle. The agent never sees the credential. Budget-enforced per handle.
 - **`wrapped_secret`**: the broker returns a short-lived, single-use artifact reference for trusted runtimes. The artifact is bound to recipient identity (session, key, origin, tab).
-- **`minted_token`** *(planned, not runtime-enabled)*: direct short-lived token issuance for cases where proxy is impractical. Modeled in the domain types but not wired into delivery adapters.
+- **`minted_token`** *(planned, not runtime-enabled)*: direct short-lived token issuance for cases where proxy is impractical. Modeled in the domain types but currently rejected with an explicit not-implemented error until runtime support lands.
 
 ## Storage
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +263,204 @@ func TestService_BrowserGrantRequiresApprovalBeforeIssue(t *testing.T) {
 	}
 	if connector.issues != 1 {
 		t.Fatalf("connector issues after approval = %d, want 1", connector.issues)
+	}
+}
+
+func TestService_RequestGrantMintedTokenReturnsNotImplementedBeforePersistingApproval(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	repo := memstore.NewRepository()
+	tools := toolregistry.New()
+	engine := policy.NewEngine()
+	signer := mustNewSigner(t)
+	connector := &fakeConnector{
+		kind: "github",
+		issued: &core.IssuedArtifact{
+			Kind: core.ArtifactKindMintedToken,
+			SecretData: map[string]string{
+				"token": "ghs_test",
+			},
+		},
+	}
+
+	mustPutTool(t, ctx, tools, core.Tool{
+		TenantID:             "t_acme",
+		Tool:                 "github",
+		ManifestHash:         "sha256:minted",
+		RuntimeClass:         core.RuntimeClassHosted,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeMintedToken},
+		AllowedCapabilities:  []string{"repo.read"},
+		TrustTags:            []string{"trusted", "github"},
+	})
+	mustPutPolicy(t, engine, core.Policy{
+		TenantID:             "t_acme",
+		Capability:           "repo.read",
+		ResourceKind:         core.ResourceKindGitHubRepo,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeMintedToken},
+		DefaultTTL:           2 * time.Minute,
+		MaxTTL:               5 * time.Minute,
+		ApprovalMode:         core.ApprovalModeLiveHuman,
+		RequiredToolTags:     []string{"trusted", "github"},
+		Condition:            `true`,
+	})
+
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		IDs:           fixedIDs("sess_minted", "evt_session"),
+		Repository:    repo,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: signer,
+		Policy:        engine,
+		Tools:         tools,
+		Connectors:    fakeConnectorResolver{connector: connector},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	sessionResp, err := svc.CreateSession(ctx, &core.CreateSessionRequest{
+		TenantID:    "t_acme",
+		AgentID:     "agent_pr_reviewer",
+		RunID:       "run_minted",
+		ToolContext: []string{"github"},
+		Attestation: &core.Attestation{Kind: core.AttestationKindK8SServiceAccountJWT, Token: "jwt"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	_, err = svc.RequestGrant(ctx, &core.RequestGrantRequest{
+		SessionToken: sessionResp.SessionToken,
+		Tool:         "github",
+		Capability:   "repo.read",
+		ResourceRef:  "github:repo:acme/widgets",
+		DeliveryMode: core.DeliveryModeMintedToken,
+		TTL:          5 * time.Minute,
+		Reason:       "mint direct token",
+	})
+	if err == nil {
+		t.Fatal("RequestGrant() error = nil, want non-nil")
+	}
+	if !errors.Is(err, core.ErrDeliveryModeNotImplemented) {
+		t.Fatalf("RequestGrant() error = %v, want ErrDeliveryModeNotImplemented", err)
+	}
+	if !strings.Contains(err.Error(), "validate delivery mode") {
+		t.Fatalf("RequestGrant() error = %q, want delivery-mode context", err)
+	}
+	if connector.issues != 0 {
+		t.Fatalf("connector issues = %d, want 0", connector.issues)
+	}
+
+	grants, err := repo.ListGrantsBySession(ctx, sessionResp.SessionID)
+	if err != nil {
+		t.Fatalf("ListGrantsBySession() error = %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("grants = %d, want 0", len(grants))
+	}
+	if _, err := repo.GetApproval(ctx, "ap_minted"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("GetApproval() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestService_ApproveGrantMintedTokenReturnsNotImplementedWithoutMutatingApproval(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	repo := memstore.NewRepository()
+	signer := mustNewSigner(t)
+	connector := &fakeConnector{
+		kind: "github",
+		issued: &core.IssuedArtifact{
+			Kind: core.ArtifactKindMintedToken,
+			SecretData: map[string]string{
+				"token": "ghs_test",
+			},
+		},
+	}
+
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		Repository:    repo,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: signer,
+		Policy:        stubPolicyEngine{},
+		Tools:         stubToolRegistry{},
+		Connectors:    fakeConnectorResolver{connector: connector},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	session := &core.Session{
+		ID:        "sess_pending_minted",
+		TenantID:  "t_acme",
+		AgentID:   "agent_pr_reviewer",
+		RunID:     "run_pending_minted",
+		State:     core.SessionStateActive,
+		ExpiresAt: now.Add(10 * time.Minute),
+		CreatedAt: now,
+	}
+	approvalID := "ap_pending_minted"
+	grant := &core.Grant{
+		ID:           "gr_pending_minted",
+		TenantID:     "t_acme",
+		SessionID:    session.ID,
+		Tool:         "github",
+		Capability:   "repo.read",
+		ResourceRef:  "github:repo:acme/widgets",
+		DeliveryMode: core.DeliveryModeMintedToken,
+		ApprovalID:   &approvalID,
+		State:        core.GrantStatePending,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(10 * time.Minute),
+	}
+	approval := &core.Approval{
+		ID:          approvalID,
+		TenantID:    "t_acme",
+		GrantID:     grant.ID,
+		RequestedBy: "agent_pr_reviewer",
+		State:       core.ApprovalStatePending,
+		ExpiresAt:   now.Add(5 * time.Minute),
+		CreatedAt:   now,
+	}
+	if err := repo.SaveSession(ctx, session); err != nil {
+		t.Fatalf("SaveSession() error = %v", err)
+	}
+	if err := repo.SaveGrant(ctx, grant); err != nil {
+		t.Fatalf("SaveGrant() error = %v", err)
+	}
+	if err := repo.SaveApproval(ctx, approval); err != nil {
+		t.Fatalf("SaveApproval() error = %v", err)
+	}
+
+	_, err = svc.ApproveGrant(ctx, &core.ApproveGrantRequest{
+		ApprovalID: approval.ID,
+		Approver:   "user:jonathan",
+		Comment:    "ship it",
+	})
+	if err == nil {
+		t.Fatal("ApproveGrant() error = nil, want non-nil")
+	}
+	if !errors.Is(err, core.ErrDeliveryModeNotImplemented) {
+		t.Fatalf("ApproveGrant() error = %v, want ErrDeliveryModeNotImplemented", err)
+	}
+	if connector.issues != 0 {
+		t.Fatalf("connector issues = %d, want 0", connector.issues)
+	}
+
+	storedApproval, err := repo.GetApproval(ctx, approval.ID)
+	if err != nil {
+		t.Fatalf("GetApproval() error = %v", err)
+	}
+	if storedApproval.State != core.ApprovalStatePending {
+		t.Fatalf("approval state = %q, want %q", storedApproval.State, core.ApprovalStatePending)
+	}
+	if storedApproval.ApprovedBy != nil {
+		t.Fatalf("approved_by = %v, want nil", *storedApproval.ApprovedBy)
 	}
 }
 

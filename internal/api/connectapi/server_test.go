@@ -83,29 +83,45 @@ func TestServer_CreateSessionAndExecuteProxy(t *testing.T) {
 func TestServer_MapsCoreErrorsToConnectCodes(t *testing.T) {
 	t.Parallel()
 
-	svc := &stubService{
-		createSession: func(context.Context, *core.CreateSessionRequest) (*core.CreateSessionResponse, error) {
-			return nil, core.ErrInvalidRequest
-		},
+	tests := []struct {
+		name string
+		err  error
+		want connect.Code
+	}{
+		{name: "invalid request", err: core.ErrInvalidRequest, want: connect.CodeInvalidArgument},
+		{name: "unimplemented delivery mode", err: core.ErrDeliveryModeNotImplemented, want: connect.CodeUnimplemented},
 	}
 
-	path, handler := connectapi.NewHandler(svc)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
-	defer server.Close()
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	client := asbv1connect.NewBrokerServiceClient(server.Client(), server.URL)
-	_, err := client.CreateSession(context.Background(), connect.NewRequest(&asbv1.CreateSessionRequest{}))
-	if err == nil {
-		t.Fatal("CreateSession() error = nil, want non-nil")
-	}
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		t.Fatalf("error = %T, want *connect.Error", err)
-	}
-	if connectErr.Code() != connect.CodeInvalidArgument {
-		t.Fatalf("code = %v, want %v", connectErr.Code(), connect.CodeInvalidArgument)
+			svc := &stubService{
+				createSession: func(context.Context, *core.CreateSessionRequest) (*core.CreateSessionResponse, error) {
+					return nil, tt.err
+				},
+			}
+
+			path, handler := connectapi.NewHandler(svc)
+			mux := http.NewServeMux()
+			mux.Handle(path, handler)
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			client := asbv1connect.NewBrokerServiceClient(server.Client(), server.URL)
+			_, err := client.CreateSession(context.Background(), connect.NewRequest(&asbv1.CreateSessionRequest{}))
+			if err == nil {
+				t.Fatal("CreateSession() error = nil, want non-nil")
+			}
+			var connectErr *connect.Error
+			if !errors.As(err, &connectErr) {
+				t.Fatalf("error = %T, want *connect.Error", err)
+			}
+			if connectErr.Code() != tt.want {
+				t.Fatalf("code = %v, want %v", connectErr.Code(), tt.want)
+			}
+		})
 	}
 }
 

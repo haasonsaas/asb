@@ -217,6 +217,9 @@ func (s *Service) RequestGrant(ctx context.Context, req *core.RequestGrantReques
 	if !decision.Allowed {
 		return nil, fmt.Errorf("%w: %s", core.ErrForbidden, decision.Reason)
 	}
+	if err := s.validateDeliveryMode(req.DeliveryMode); err != nil {
+		return nil, fmt.Errorf("request grant for session %q: validate delivery mode %q: %w", session.ID, req.DeliveryMode, err)
+	}
 
 	now := s.clock.Now()
 	grant := &core.Grant{
@@ -326,6 +329,9 @@ func (s *Service) ApproveGrant(ctx context.Context, req *core.ApproveGrantReques
 	grant, err := s.repo.GetGrant(ctx, approval.GrantID)
 	if err != nil {
 		return nil, fmt.Errorf("approve grant via approval %q: load grant %q: %w", req.ApprovalID, approval.GrantID, err)
+	}
+	if err := s.validateDeliveryMode(grant.DeliveryMode); err != nil {
+		return nil, fmt.Errorf("approve grant %q: validate delivery mode %q: %w", grant.ID, grant.DeliveryMode, err)
 	}
 	session, err := s.repo.GetSession(ctx, grant.SessionID)
 	if err != nil {
@@ -700,6 +706,10 @@ func (s *Service) UnwrapArtifact(ctx context.Context, req *core.UnwrapArtifactRe
 }
 
 func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *core.Grant, resource core.ResourceDescriptor, connector core.Connector) (*core.RequestGrantResponse, error) {
+	if err := s.validateDeliveryMode(grant.DeliveryMode); err != nil {
+		return nil, fmt.Errorf("issue grant %q: validate delivery mode %q: %w", grant.ID, grant.DeliveryMode, err)
+	}
+
 	startedAt := time.Now()
 	artifact, err := connector.Issue(ctx, core.IssueRequest{
 		Session:  session,
@@ -711,10 +721,7 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 		return nil, fmt.Errorf("issue grant %q: connector %q issue: %w", grant.ID, connector.Kind(), err)
 	}
 
-	adapter, ok := s.deliveries[grant.DeliveryMode]
-	if !ok {
-		return nil, fmt.Errorf("%w: no delivery adapter for mode %q", core.ErrInvalidRequest, grant.DeliveryMode)
-	}
+	adapter := s.deliveries[grant.DeliveryMode]
 
 	delivery, err := adapter.Deliver(ctx, artifact, session, grant)
 	if err != nil {
@@ -808,6 +815,16 @@ func (s *Service) issueGrant(ctx context.Context, session *core.Session, grant *
 		Delivery:  delivery,
 		ExpiresAt: grant.ExpiresAt,
 	}, nil
+}
+
+func (s *Service) validateDeliveryMode(mode core.DeliveryMode) error {
+	if mode == core.DeliveryModeMintedToken {
+		return fmt.Errorf("%w: %q", core.ErrDeliveryModeNotImplemented, mode)
+	}
+	if _, ok := s.deliveries[mode]; !ok {
+		return fmt.Errorf("%w: no delivery adapter for mode %q", core.ErrInvalidRequest, mode)
+	}
+	return nil
 }
 
 func (s *Service) loadActiveSession(ctx context.Context, raw string) (*core.Session, *core.SessionClaims, error) {

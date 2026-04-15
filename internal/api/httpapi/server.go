@@ -378,6 +378,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, core.ErrInvalidRequest):
 		status = http.StatusBadRequest
+	case errors.Is(err, core.ErrDeliveryModeNotImplemented):
+		status = http.StatusNotImplemented
 	case errors.Is(err, core.ErrUnauthorized):
 		status = http.StatusUnauthorized
 	case errors.Is(err, core.ErrForbidden):
