@@ -1,7 +1,9 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +15,7 @@ import (
 )
 
 type RepoTokenSource interface {
-	TokenForRepo(ctx context.Context, owner string, repo string) (string, error)
+	TokenForRepo(ctx context.Context, owner string, repo string, operation string) (string, error)
 }
 
 type ExecutorConfig struct {
@@ -56,21 +58,23 @@ func (e *HTTPExecutor) Execute(ctx context.Context, artifact *core.Artifact, ope
 	if err != nil {
 		return nil, err
 	}
-	token, err := e.tokenSource.TokenForRepo(ctx, owner, repo)
+	requestSpec, err := e.buildRequest(operation, owner, repo, params)
 	if err != nil {
 		return nil, err
 	}
-
-	requestURL, err := e.buildRequestURL(operation, owner, repo, params)
+	token, err := e.tokenSource.TokenForRepo(ctx, owner, repo, operation)
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	request, err := http.NewRequestWithContext(ctx, requestSpec.method, requestSpec.url, bytes.NewReader(requestSpec.body))
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
+	if len(requestSpec.body) > 0 {
+		request.Header.Set("Content-Type", "application/json")
+	}
 
 	response, err := e.client.Do(request)
 	if err != nil {
@@ -89,33 +93,77 @@ func (e *HTTPExecutor) Execute(ctx context.Context, artifact *core.Artifact, ope
 	return body, nil
 }
 
-func (e *HTTPExecutor) buildRequestURL(operation string, owner string, repo string, params map[string]any) (string, error) {
+type requestSpec struct {
+	method string
+	url    string
+	body   []byte
+}
+
+func (e *HTTPExecutor) buildRequest(operation string, owner string, repo string, params map[string]any) (requestSpec, error) {
 	u, err := url.Parse(e.baseURL)
 	if err != nil {
-		return "", err
+		return requestSpec{}, err
 	}
 
 	switch operation {
-	case "pull_request_metadata":
+	case operationPullRequestMetadata:
 		u.Path = fmt.Sprintf("%s/repos/%s/%s/pulls/%d", u.Path, owner, repo, intFromAny(params["pull_number"]))
-	case "pull_request_files":
+	case operationPullRequestFiles:
 		u.Path = fmt.Sprintf("%s/repos/%s/%s/pulls/%d/files", u.Path, owner, repo, intFromAny(params["pull_number"]))
 		q := u.Query()
 		q.Set("page", strconv.Itoa(max(intFromAny(params["page"]), 1)))
 		q.Set("per_page", strconv.Itoa(min(max(intFromAny(params["per_page"]), 1), 100)))
 		u.RawQuery = q.Encode()
-	case "repository_metadata":
+	case operationRepositoryMetadata:
 		u.Path = fmt.Sprintf("%s/repos/%s/%s", u.Path, owner, repo)
-	case "repository_issues":
+	case operationRepositoryIssues:
 		u.Path = fmt.Sprintf("%s/repos/%s/%s/issues", u.Path, owner, repo)
 		q := u.Query()
 		q.Set("page", strconv.Itoa(max(intFromAny(params["page"]), 1)))
 		q.Set("per_page", strconv.Itoa(min(max(intFromAny(params["per_page"]), 1), 100)))
 		u.RawQuery = q.Encode()
+	case operationCreateIssue:
+		u.Path = fmt.Sprintf("%s/repos/%s/%s/issues", u.Path, owner, repo)
+		body, err := marshalRequestBody(map[string]any{
+			"title":     params["title"],
+			"body":      params["body"],
+			"assignees": params["assignees"],
+			"labels":    params["labels"],
+		})
+		if err != nil {
+			return requestSpec{}, err
+		}
+		return requestSpec{method: http.MethodPost, url: u.String(), body: body}, nil
+	case operationCreatePullRequestComment:
+		u.Path = fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", u.Path, owner, repo, intFromAny(params["pull_number"]))
+		body, err := marshalRequestBody(map[string]any{
+			"body": params["body"],
+		})
+		if err != nil {
+			return requestSpec{}, err
+		}
+		return requestSpec{method: http.MethodPost, url: u.String(), body: body}, nil
+	case operationCreateCheckRun:
+		u.Path = fmt.Sprintf("%s/repos/%s/%s/check-runs", u.Path, owner, repo)
+		body, err := marshalRequestBody(map[string]any{
+			"name":         params["name"],
+			"head_sha":     params["head_sha"],
+			"details_url":  params["details_url"],
+			"external_id":  params["external_id"],
+			"status":       params["status"],
+			"conclusion":   params["conclusion"],
+			"started_at":   params["started_at"],
+			"completed_at": params["completed_at"],
+			"output":       params["output"],
+		})
+		if err != nil {
+			return requestSpec{}, err
+		}
+		return requestSpec{method: http.MethodPost, url: u.String(), body: body}, nil
 	default:
-		return "", fmt.Errorf("%w: github operation %q is not allowlisted", core.ErrForbidden, operation)
+		return requestSpec{}, fmt.Errorf("%w: github operation %q is not allowlisted", core.ErrForbidden, operation)
 	}
-	return u.String(), nil
+	return requestSpec{method: http.MethodGet, url: u.String()}, nil
 }
 
 func parseOwnerRepo(resourceRef string) (string, string, error) {
@@ -164,9 +212,23 @@ func max(a int, b int) int {
 
 type staticTokenSource string
 
-func (s staticTokenSource) TokenForRepo(context.Context, string, string) (string, error) {
+func (s staticTokenSource) TokenForRepo(context.Context, string, string, string) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("%w: github token is empty", core.ErrInvalidRequest)
 	}
 	return string(s), nil
+}
+
+func marshalRequestBody(payload map[string]any) ([]byte, error) {
+	filtered := make(map[string]any, len(payload))
+	for key, value := range payload {
+		if value == nil {
+			continue
+		}
+		filtered[key] = value
+	}
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(filtered)
 }

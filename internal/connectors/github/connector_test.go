@@ -62,3 +62,30 @@ func TestConnector_IssueReturnsAllowlistedProxyHandle(t *testing.T) {
 		t.Fatalf("resource_ref = %q, want github repo ref", issued.Metadata["resource_ref"])
 	}
 }
+
+func TestConnector_IssueAllowsConfiguredWriteOperations(t *testing.T) {
+	t.Parallel()
+
+	connector := github.NewConnector(github.Config{
+		AllowedOperations: []string{"create_issue", "create_pull_request_comment", "create_check_run", "unknown"},
+	})
+
+	issued, err := connector.Issue(context.Background(), core.IssueRequest{
+		Session: &core.Session{ID: "sess_write", TenantID: "t_acme"},
+		Grant: &core.Grant{
+			ID:           "gr_write",
+			DeliveryMode: core.DeliveryModeProxy,
+			ExpiresAt:    time.Date(2026, 3, 12, 20, 10, 0, 0, time.UTC),
+		},
+		Resource: core.ResourceDescriptor{
+			Kind: core.ResourceKindGitHubRepo,
+			Name: "acme/widgets",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if got := issued.Metadata["operations"]; got != "create_issue,create_pull_request_comment,create_check_run" {
+		t.Fatalf("operations = %q, want configured write allowlist", got)
+	}
+}

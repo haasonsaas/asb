@@ -414,7 +414,9 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, out any) err
 	}
 
 	body := http.MaxBytesReader(w, r.Body, s.maxBody)
-	defer body.Close()
+	defer func() {
+		_ = body.Close()
+	}()
 
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()

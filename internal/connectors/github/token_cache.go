@@ -16,8 +16,8 @@ const defaultRepoInstallationTTL = 24 * time.Hour
 type AppTokenCache interface {
 	GetRepoInstallation(ctx context.Context, repoKey string) (int64, bool, error)
 	SetRepoInstallation(ctx context.Context, repoKey string, installationID int64) error
-	GetInstallationToken(ctx context.Context, installationID int64) (cachedInstallationToken, bool, error)
-	SetInstallationToken(ctx context.Context, installationID int64, token cachedInstallationToken) error
+	GetInstallationToken(ctx context.Context, installationID int64, scopeKey string) (cachedInstallationToken, bool, error)
+	SetInstallationToken(ctx context.Context, installationID int64, scopeKey string, token cachedInstallationToken) error
 }
 
 type RedisAppTokenCacheConfig struct {
@@ -75,8 +75,8 @@ func (c *redisAppTokenCache) SetRepoInstallation(ctx context.Context, repoKey st
 	).Err()
 }
 
-func (c *redisAppTokenCache) GetInstallationToken(ctx context.Context, installationID int64) (cachedInstallationToken, bool, error) {
-	value, err := c.client.Get(ctx, c.installationTokenKey(installationID)).Bytes()
+func (c *redisAppTokenCache) GetInstallationToken(ctx context.Context, installationID int64, scopeKey string) (cachedInstallationToken, bool, error) {
+	value, err := c.client.Get(ctx, c.installationTokenKey(installationID, scopeKey)).Bytes()
 	if err == goredis.Nil {
 		return cachedInstallationToken{}, false, nil
 	}
@@ -93,7 +93,7 @@ func (c *redisAppTokenCache) GetInstallationToken(ctx context.Context, installat
 	return cached, true, nil
 }
 
-func (c *redisAppTokenCache) SetInstallationToken(ctx context.Context, installationID int64, token cachedInstallationToken) error {
+func (c *redisAppTokenCache) SetInstallationToken(ctx context.Context, installationID int64, scopeKey string, token cachedInstallationToken) error {
 	ttl := time.Until(token.expiresAt)
 	if ttl <= 0 {
 		return nil
@@ -105,13 +105,13 @@ func (c *redisAppTokenCache) SetInstallationToken(ctx context.Context, installat
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, c.installationTokenKey(installationID), payload, ttl).Err()
+	return c.client.Set(ctx, c.installationTokenKey(installationID, scopeKey), payload, ttl).Err()
 }
 
 func (c *redisAppTokenCache) repoInstallationKey(repoKey string) string {
 	return fmt.Sprintf("%sgithub:repo-installation:%s", c.keyPrefix, repoKey)
 }
 
-func (c *redisAppTokenCache) installationTokenKey(installationID int64) string {
-	return fmt.Sprintf("%sgithub:installation-token:%d", c.keyPrefix, installationID)
+func (c *redisAppTokenCache) installationTokenKey(installationID int64, scopeKey string) string {
+	return fmt.Sprintf("%sgithub:installation-token:%d:%s", c.keyPrefix, installationID, scopeKey)
 }

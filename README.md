@@ -258,9 +258,10 @@ Configure at least one attestation verifier:
 | `ASB_HTTP_SHUTDOWN_TIMEOUT` | API shutdown drain timeout |
 | `ASB_GITHUB_TOKEN` | Static GitHub token (dev) |
 | `ASB_GITHUB_API_BASE_URL` | GitHub API base URL override |
+| `ASB_GITHUB_ALLOWED_OPERATIONS` | Comma-separated GitHub proxy operations; defaults to read-only operations |
 | `ASB_GITHUB_APP_ID` | GitHub App ID |
 | `ASB_GITHUB_APP_PRIVATE_KEY_FILE` | GitHub App private key |
-| `ASB_GITHUB_APP_PERMISSIONS_JSON` | GitHub App token permissions |
+| `ASB_GITHUB_APP_PERMISSIONS_JSON` | Override read-operation GitHub App token permissions |
 | `ASB_DELEGATION_ISSUER` | Delegation JWT issuer |
 | `ASB_DELEGATION_PUBLIC_KEY_FILE` | Delegation JWT public key |
 | `ASB_SESSION_SIGNING_PRIVATE_KEY_FILE` | Ed25519 private key for session tokens |

@@ -115,7 +115,9 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 	tools := toolregistry.New()
 	engine := policy.NewEngine()
 	connectorOptions := []resolver.Option{
-		resolver.WithGitHub(githubconnector.NewConnector(githubconnector.Config{})),
+		resolver.WithGitHub(githubconnector.NewConnector(githubconnector.Config{
+			AllowedOperations: splitCommaSeparatedEnv("ASB_GITHUB_ALLOWED_OPERATIONS"),
+		})),
 	}
 
 	githubProxy, err := newGitHubProxyExecutor(redisClient)

@@ -9,13 +9,6 @@ import (
 	"github.com/evalops/asb/internal/core"
 )
 
-var defaultOperations = []string{
-	"pull_request_metadata",
-	"pull_request_files",
-	"repository_metadata",
-	"repository_issues",
-}
-
 type Config struct {
 	AllowedOperations []string
 	Budget            core.ProxyBudget
@@ -27,8 +20,8 @@ type Connector struct {
 }
 
 func NewConnector(cfg Config) *Connector {
-	operations := append([]string(nil), cfg.AllowedOperations...)
-	if len(operations) == 0 {
+	operations := normalizeOperations(cfg.AllowedOperations)
+	if len(cfg.AllowedOperations) == 0 {
 		operations = append([]string(nil), defaultOperations...)
 	}
 	budget := cfg.Budget

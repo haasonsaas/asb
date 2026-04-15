@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 		t.Fatalf("NewAppTokenSource() error = %v", err)
 	}
 
-	token, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	token, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() error = %v", err)
 	}
@@ -69,7 +70,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 		t.Fatalf("token = %q, want inst-token", token)
 	}
 
-	cachedToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	cachedToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() cached error = %v", err)
 	}
@@ -78,6 +79,77 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 	}
 	if installationLookups != 1 || tokenRequests != 1 {
 		t.Fatalf("lookups/requests = %d/%d, want 1/1", installationLookups, tokenRequests)
+	}
+}
+
+func TestAppTokenSource_TokenForRepoScopesPermissionsByOperation(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	tokenRequests := 0
+	requestedPermissions := make([]map[string]string, 0, 2)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/installation":
+			_, _ = w.Write([]byte(`{"id":987}`))
+		case "/app/installations/987/access_tokens":
+			tokenRequests++
+			var payload struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			requestedPermissions = append(requestedPermissions, payload.Permissions)
+			tokenValue := "read-token"
+			if tokenRequests > 1 {
+				tokenValue = "write-token"
+			}
+			_, _ = w.Write([]byte(`{"token":"` + tokenValue + `","expires_at":"` + now.Add(10*time.Minute).Format(time.RFC3339) + `"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	source, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() error = %v", err)
+	}
+
+	readToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
+	if err != nil {
+		t.Fatalf("TokenForRepo() read error = %v", err)
+	}
+	writeToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "create_issue")
+	if err != nil {
+		t.Fatalf("TokenForRepo() write error = %v", err)
+	}
+	if readToken == writeToken {
+		t.Fatalf("tokens = %q/%q, want distinct scope-specific tokens", readToken, writeToken)
+	}
+	if tokenRequests != 2 {
+		t.Fatalf("token requests = %d, want 2", tokenRequests)
+	}
+	if got := requestedPermissions[0]["contents"]; got != "read" {
+		t.Fatalf("read permissions = %#v, want read scope", requestedPermissions[0])
+	}
+	if got := requestedPermissions[1]["issues"]; got != "write" || len(requestedPermissions[1]) != 1 {
+		t.Fatalf("write permissions = %#v, want issues:write only", requestedPermissions[1])
 	}
 }
 
@@ -122,12 +194,12 @@ func TestAppTokenSource_TokenForRepoRefreshesWhenTokenNearExpiry(t *testing.T) {
 		t.Fatalf("NewAppTokenSource() error = %v", err)
 	}
 
-	firstToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	firstToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() first error = %v", err)
 	}
 	currentTime = now.Add(2 * time.Minute)
-	secondToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	secondToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() second error = %v", err)
 	}
@@ -179,7 +251,7 @@ func TestAppTokenSource_ClassifiesGitHubErrors(t *testing.T) {
 				t.Fatalf("NewAppTokenSource() error = %v", err)
 			}
 
-			_, err = source.TokenForRepo(context.Background(), "acme", "widgets")
+			_, err = source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("TokenForRepo() error = %v, want %v", err, tc.wantErr)
 			}
@@ -252,11 +324,11 @@ func TestAppTokenSource_TokenForRepoUsesRedisSharedCache(t *testing.T) {
 		t.Fatalf("NewAppTokenSource() second error = %v", err)
 	}
 
-	firstToken, err := first.TokenForRepo(context.Background(), "acme", "widgets")
+	firstToken, err := first.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() first error = %v", err)
 	}
-	secondToken, err := second.TokenForRepo(context.Background(), "acme", "widgets")
+	secondToken, err := second.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() second error = %v", err)
 	}
@@ -265,6 +337,104 @@ func TestAppTokenSource_TokenForRepoUsesRedisSharedCache(t *testing.T) {
 	}
 	if installationLookups != 1 || tokenRequests != 1 {
 		t.Fatalf("lookups/requests = %d/%d, want 1/1", installationLookups, tokenRequests)
+	}
+}
+
+func TestAppTokenSource_TokenForRepoCachesByPermissionScope(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run() error = %v", err)
+	}
+	defer redisServer.Close()
+
+	redisClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() {
+		_ = redisClient.Close()
+	})
+
+	tokenRequests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/installation":
+			_, _ = w.Write([]byte(`{"id":987}`))
+		case "/app/installations/987/access_tokens":
+			tokenRequests++
+			tokenValue := "read-token"
+			if tokenRequests > 1 {
+				tokenValue = "write-token"
+			}
+			_, _ = w.Write([]byte(`{"token":"` + tokenValue + `","expires_at":"` + now.Add(10*time.Minute).Format(time.RFC3339) + `"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cache := github.NewRedisAppTokenCache(github.RedisAppTokenCacheConfig{Client: redisClient})
+	first, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Cache:      cache,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() first error = %v", err)
+	}
+	second, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Cache:      cache,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() second error = %v", err)
+	}
+
+	firstReadToken, err := first.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
+	if err != nil {
+		t.Fatalf("TokenForRepo() first read error = %v", err)
+	}
+	secondReadToken, err := second.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
+	if err != nil {
+		t.Fatalf("TokenForRepo() second read error = %v", err)
+	}
+	firstWriteToken, err := first.TokenForRepo(context.Background(), "acme", "widgets", "create_issue")
+	if err != nil {
+		t.Fatalf("TokenForRepo() first write error = %v", err)
+	}
+	secondWriteToken, err := second.TokenForRepo(context.Background(), "acme", "widgets", "create_issue")
+	if err != nil {
+		t.Fatalf("TokenForRepo() second write error = %v", err)
+	}
+
+	if firstReadToken != secondReadToken {
+		t.Fatalf("read tokens = %q/%q, want shared cached token", firstReadToken, secondReadToken)
+	}
+	if firstWriteToken != secondWriteToken {
+		t.Fatalf("write tokens = %q/%q, want shared cached token", firstWriteToken, secondWriteToken)
+	}
+	if firstReadToken == firstWriteToken {
+		t.Fatalf("read/write tokens = %q/%q, want cache separated by scope", firstReadToken, firstWriteToken)
+	}
+	if tokenRequests != 2 {
+		t.Fatalf("token requests = %d, want 2", tokenRequests)
 	}
 }
 

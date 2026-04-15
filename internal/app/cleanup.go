@@ -242,10 +242,3 @@ func (s *Service) transitionGrantState(ctx context.Context, session *core.Sessio
 
 	return nil
 }
-
-func (s *Service) cleanupSummary(stats *CleanupStats) string {
-	if stats == nil {
-		return ""
-	}
-	return fmt.Sprintf("approvals=%d sessions=%d grants=%d artifacts=%d", stats.ApprovalsExpired, stats.SessionsExpired, stats.GrantsExpired, stats.ArtifactsExpired)
-}

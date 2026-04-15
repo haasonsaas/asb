@@ -65,7 +65,9 @@ func (c *HTTPClient) GenerateCredentials(ctx context.Context, role string) (*Lea
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
@@ -115,7 +117,9 @@ func (c *HTTPClient) revokeLeaseOnce(ctx context.Context, leaseID string) error 
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err

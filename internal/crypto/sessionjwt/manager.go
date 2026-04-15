@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/evalops/asb/internal/core"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type Manager struct {
@@ -80,7 +80,7 @@ func (m *Manager) Verify(raw string) (*core.SessionClaims, error) {
 }
 
 func (c *claims) Valid() error {
-	if c.RegisteredClaims.ExpiresAt == nil {
+	if c.ExpiresAt == nil {
 		return fmt.Errorf("%w: missing exp", core.ErrUnauthorized)
 	}
 	return jwt.NewValidator(jwt.WithTimeFunc(time.Now)).Validate(c.RegisteredClaims)

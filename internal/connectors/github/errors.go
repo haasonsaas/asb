@@ -17,6 +17,8 @@ func classifyGitHubAPIError(response *http.Response, body []byte, action string)
 	switch {
 	case response.StatusCode == http.StatusUnauthorized:
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrUnauthorized, action, response.StatusCode, message)
+	case response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w: %s returned %d: %s", core.ErrInvalidRequest, action, response.StatusCode, message)
 	case response.StatusCode == http.StatusTooManyRequests || response.Header.Get("Retry-After") != "" || response.Header.Get("X-RateLimit-Remaining") == "0":
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrRateLimited, action, response.StatusCode, message)
 	case response.StatusCode == http.StatusNotFound:
