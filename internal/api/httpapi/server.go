@@ -382,10 +382,14 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusNotImplemented
 	case errors.Is(err, core.ErrUnauthorized):
 		status = http.StatusUnauthorized
+	case errors.Is(err, core.ErrRateLimited):
+		status = http.StatusTooManyRequests
 	case errors.Is(err, core.ErrForbidden):
 		status = http.StatusForbidden
 	case errors.Is(err, core.ErrNotFound):
 		status = http.StatusNotFound
+	case errors.Is(err, core.ErrUnavailable):
+		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

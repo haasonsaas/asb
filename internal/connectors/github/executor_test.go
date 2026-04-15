@@ -2,6 +2,7 @@ package github_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,5 +48,49 @@ func TestHTTPExecutor_ExecutePullRequestFiles(t *testing.T) {
 	}
 	if string(payload) != `{"files":[{"filename":"main.go"}]}` {
 		t.Fatalf("payload = %s, want expected github json", string(payload))
+	}
+}
+
+func TestHTTPExecutor_ClassifiesGitHubAPIErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		headers    map[string]string
+		wantErr    error
+	}{
+		{name: "not found", statusCode: http.StatusNotFound, wantErr: core.ErrNotFound},
+		{name: "permission denied", statusCode: http.StatusForbidden, wantErr: core.ErrForbidden},
+		{name: "rate limited", statusCode: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "60"}, wantErr: core.ErrRateLimited},
+		{name: "unavailable", statusCode: http.StatusBadGateway, wantErr: core.ErrUnavailable},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for key, value := range tc.headers {
+					w.Header().Set(key, value)
+				}
+				http.Error(w, tc.name, tc.statusCode)
+			}))
+			defer server.Close()
+
+			executor := github.NewHTTPExecutor(github.ExecutorConfig{
+				BaseURL:     server.URL,
+				Client:      server.Client(),
+				TokenSource: github.StaticTokenSource("test-token"),
+			})
+			_, err := executor.Execute(context.Background(), &core.Artifact{
+				Metadata: map[string]string{
+					"resource_ref": "github:repo:acme/widgets",
+				},
+			}, "repository_metadata", nil)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Execute() error = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
 }
