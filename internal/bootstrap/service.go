@@ -104,7 +104,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 	if err != nil {
 		return nil, err
 	}
-	runtimeStore, cleanupRuntime, redisProbe, redisStats, err := newRuntimeStore(ctx)
+	runtimeStore, redisClient, cleanupRuntime, redisProbe, redisStats, err := newRuntimeStore(ctx)
 	if err != nil {
 		cleanupRepository()
 		return nil, err
@@ -117,7 +117,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 		resolver.WithGitHub(githubconnector.NewConnector(githubconnector.Config{})),
 	}
 
-	githubProxy, err := newGitHubProxyExecutor()
+	githubProxy, err := newGitHubProxyExecutor(redisClient)
 	if err != nil {
 		cleanupRuntime()
 		cleanupRepository()
@@ -383,7 +383,7 @@ func newDelegationValidator() (core.DelegationValidator, error) {
 	})
 }
 
-func newGitHubProxyExecutor() (core.GitHubProxyExecutor, error) {
+func newGitHubProxyExecutor(redisClient goredis.UniversalClient) (core.GitHubProxyExecutor, error) {
 	var tokenSource githubconnector.RepoTokenSource
 	var staticTokenSource githubconnector.RepoTokenSource
 	if token := os.Getenv("ASB_GITHUB_TOKEN"); token != "" {
@@ -409,6 +409,7 @@ func newGitHubProxyExecutor() (core.GitHubProxyExecutor, error) {
 			AppID:       appID,
 			PrivateKey:  privateKey,
 			BaseURL:     getenv("ASB_GITHUB_API_BASE_URL", "https://api.github.com"),
+			Cache:       githubconnector.NewRedisAppTokenCache(githubconnector.RedisAppTokenCacheConfig{Client: redisClient}),
 			Permissions: permissions,
 		})
 		if err != nil {
@@ -469,7 +470,7 @@ func newRepository(ctx context.Context) (core.Repository, func(), readinessProbe
 	return memstore.NewRepository(), func() {}, nil, nil, nil
 }
 
-func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessProbe, func() *goredis.PoolStats, error) {
+func newRuntimeStore(ctx context.Context) (core.RuntimeStore, goredis.UniversalClient, func(), readinessProbe, func() *goredis.PoolStats, error) {
 	if addr := os.Getenv("ASB_REDIS_ADDR"); addr != "" {
 		client := goredis.NewClient(&goredis.Options{
 			Addr:     addr,
@@ -479,17 +480,17 @@ func newRuntimeStore(ctx context.Context) (core.RuntimeStore, func(), readinessP
 		closeClient := func() { _ = client.Close() }
 		if err := instrumentDefaultRedisClient(client); err != nil {
 			closeClient()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		if err := client.Ping(ctx).Err(); err != nil {
 			closeClient()
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
-		return redisstore.NewRuntimeStore(client), closeClient, func(ctx context.Context) error {
+		return redisstore.NewRuntimeStore(client), client, closeClient, func(ctx context.Context) error {
 			return client.Ping(ctx).Err()
 		}, redisPoolStats(client), nil
 	}
-	return memstore.NewRuntimeStore(), func() {}, nil, nil, nil
+	return memstore.NewRuntimeStore(), nil, func() {}, nil, nil, nil
 }
 
 func pgxPoolDBStats(pool *pgxpool.Pool) func() sql.DBStats {

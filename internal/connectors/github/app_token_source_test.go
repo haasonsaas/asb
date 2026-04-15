@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/evalops/asb/internal/connectors/github"
 	"github.com/evalops/asb/internal/core"
 	"github.com/golang-jwt/jwt/v5"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T) {
@@ -182,6 +184,87 @@ func TestAppTokenSource_ClassifiesGitHubErrors(t *testing.T) {
 				t.Fatalf("TokenForRepo() error = %v, want %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestAppTokenSource_TokenForRepoUsesRedisSharedCache(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run() error = %v", err)
+	}
+	defer redisServer.Close()
+
+	redisClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() {
+		_ = redisClient.Close()
+	})
+
+	installationLookups := 0
+	tokenRequests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/installation":
+			installationLookups++
+			_, _ = w.Write([]byte(`{"id":987}`))
+		case "/app/installations/987/access_tokens":
+			tokenRequests++
+			_, _ = w.Write([]byte(`{"token":"inst-token","expires_at":"` + now.Add(10*time.Minute).Format(time.RFC3339) + `"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cache := github.NewRedisAppTokenCache(github.RedisAppTokenCacheConfig{Client: redisClient})
+	first, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Cache:      cache,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() first error = %v", err)
+	}
+	second, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Cache:      cache,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() second error = %v", err)
+	}
+
+	firstToken, err := first.TokenForRepo(context.Background(), "acme", "widgets")
+	if err != nil {
+		t.Fatalf("TokenForRepo() first error = %v", err)
+	}
+	secondToken, err := second.TokenForRepo(context.Background(), "acme", "widgets")
+	if err != nil {
+		t.Fatalf("TokenForRepo() second error = %v", err)
+	}
+	if firstToken != secondToken {
+		t.Fatalf("tokens = %q/%q, want shared cached token", firstToken, secondToken)
+	}
+	if installationLookups != 1 || tokenRequests != 1 {
+		t.Fatalf("lookups/requests = %d/%d, want 1/1", installationLookups, tokenRequests)
 	}
 }
 

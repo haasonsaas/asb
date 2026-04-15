@@ -22,6 +22,7 @@ type AppTokenSourceConfig struct {
 	PrivateKey  *rsa.PrivateKey
 	BaseURL     string
 	Client      *http.Client
+	Cache       AppTokenCache
 	Permissions map[string]string
 	Now         func() time.Time
 }
@@ -31,6 +32,7 @@ type AppTokenSource struct {
 	privateKey  *rsa.PrivateKey
 	baseURL     string
 	client      *http.Client
+	cache       AppTokenCache
 	permissions map[string]string
 	now         func() time.Time
 
@@ -70,6 +72,7 @@ func NewAppTokenSource(cfg AppTokenSourceConfig) (*AppTokenSource, error) {
 		privateKey:        cfg.PrivateKey,
 		baseURL:           strings.TrimRight(cfg.BaseURL, "/"),
 		client:            cfg.Client,
+		cache:             cfg.Cache,
 		permissions:       cfg.Permissions,
 		now:               cfg.Now,
 		repoInstallations: make(map[string]int64),
@@ -80,16 +83,12 @@ func NewAppTokenSource(cfg AppTokenSourceConfig) (*AppTokenSource, error) {
 func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo string) (string, error) {
 	repoKey := owner + "/" + repo
 
-	s.mu.Lock()
-	installationID, ok := s.repoInstallations[repoKey]
+	installationID, ok := s.lookupInstallationIDCache(ctx, repoKey)
 	if ok {
-		if cached, ok := s.installationCache[installationID]; ok && cached.expiresAt.After(s.now().Add(5*time.Minute)) {
-			token := cached.token
-			s.mu.Unlock()
-			return token, nil
+		if cached, ok := s.lookupInstallationTokenCache(ctx, installationID); ok {
+			return cached.token, nil
 		}
 	}
-	s.mu.Unlock()
 
 	appToken, err := s.appJWT()
 	if err != nil {
@@ -101,23 +100,76 @@ func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo st
 		if err != nil {
 			return "", err
 		}
-		s.mu.Lock()
-		s.repoInstallations[repoKey] = installationID
-		s.mu.Unlock()
+		s.storeInstallationIDCache(ctx, repoKey, installationID)
 	}
 
 	token, expiresAt, err := s.createInstallationToken(ctx, installationID, repo, appToken)
 	if err != nil {
 		return "", err
 	}
-
-	s.mu.Lock()
-	s.installationCache[installationID] = cachedInstallationToken{
+	s.storeInstallationTokenCache(ctx, installationID, cachedInstallationToken{
 		token:     token,
 		expiresAt: expiresAt,
-	}
-	s.mu.Unlock()
+	})
 	return token, nil
+}
+
+func (s *AppTokenSource) lookupInstallationIDCache(ctx context.Context, repoKey string) (int64, bool) {
+	s.mu.Lock()
+	installationID, ok := s.repoInstallations[repoKey]
+	s.mu.Unlock()
+	if ok {
+		return installationID, true
+	}
+	if s.cache == nil {
+		return 0, false
+	}
+	installationID, ok, err := s.cache.GetRepoInstallation(ctx, repoKey)
+	if err != nil || !ok {
+		return 0, false
+	}
+	s.mu.Lock()
+	s.repoInstallations[repoKey] = installationID
+	s.mu.Unlock()
+	return installationID, true
+}
+
+func (s *AppTokenSource) storeInstallationIDCache(ctx context.Context, repoKey string, installationID int64) {
+	s.mu.Lock()
+	s.repoInstallations[repoKey] = installationID
+	s.mu.Unlock()
+	if s.cache != nil {
+		_ = s.cache.SetRepoInstallation(ctx, repoKey, installationID)
+	}
+}
+
+func (s *AppTokenSource) lookupInstallationTokenCache(ctx context.Context, installationID int64) (cachedInstallationToken, bool) {
+	s.mu.Lock()
+	cached, ok := s.installationCache[installationID]
+	s.mu.Unlock()
+	if ok && cached.expiresAt.After(s.now().Add(5*time.Minute)) {
+		return cached, true
+	}
+	if s.cache == nil {
+		return cachedInstallationToken{}, false
+	}
+	cached, ok, err := s.cache.GetInstallationToken(ctx, installationID)
+	if err != nil || !ok || !cached.expiresAt.After(s.now().Add(5*time.Minute)) {
+		return cachedInstallationToken{}, false
+	}
+	s.mu.Lock()
+	s.installationCache[installationID] = cached
+	s.mu.Unlock()
+	return cached, true
+}
+
+func (s *AppTokenSource) storeInstallationTokenCache(ctx context.Context, installationID int64, cached cachedInstallationToken) {
+	s.mu.Lock()
+	s.installationCache[installationID] = cached
+	s.mu.Unlock()
+	if s.cache != nil {
+		_ = s.cache.SetInstallationToken(ctx, installationID, cached)
+	}
 }
 
 func (s *AppTokenSource) appJWT() (string, error) {

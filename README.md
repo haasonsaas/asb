@@ -148,7 +148,7 @@ Primary persistence for sessions, grants, approvals, artifacts, and audit events
 
 ### Redis
 
-Runtime state only, not source-of-truth persistence. Used for proxy handle budgets and browser relay session state when `ASB_REDIS_ADDR` is set. Keys are set with automatic expiry. Watch-based transactions enforce concurrent budget limits. No durability guarantees — state is reconstructable from Postgres.
+Runtime state only, not source-of-truth persistence. Used for proxy handle budgets, browser relay session state, and shared GitHub App installation-token caching when `ASB_REDIS_ADDR` is set. Keys are set with automatic expiry. Watch-based transactions enforce concurrent budget limits. No durability guarantees — state is reconstructable from Postgres.
 
 ### In-memory
 
@@ -235,7 +235,7 @@ Flags: `-interval` (default 30s), `-limit` (default 100 per pass), `-once` (sing
 | `ASB_ADDR` | Listen address (default `:8080`) |
 | `ASB_DEV_TENANT_ID` | Tenant ID for local development |
 | `ASB_POSTGRES_DSN` | Enables Postgres repository |
-| `ASB_REDIS_ADDR` | Enables Redis runtime store |
+| `ASB_REDIS_ADDR` | Enables Redis runtime store and shared GitHub App token cache |
 | `ASB_REDIS_PASSWORD` | Redis authentication |
 | `ASB_HTTP_MAX_BODY_BYTES` | Maximum JSON request body size |
 | `ASB_HTTP_READ_TIMEOUT` | HTTP server read timeout |
