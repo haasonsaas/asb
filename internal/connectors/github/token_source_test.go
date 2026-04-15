@@ -12,15 +12,15 @@ func TestFallbackTokenSourceUsesFallbackOnPrimaryFailure(t *testing.T) {
 	t.Parallel()
 
 	source := github.FallbackTokenSource(
-		repoTokenSourceFunc(func(context.Context, string, string) (string, error) {
+		repoTokenSourceFunc(func(context.Context, string, string, string) (string, error) {
 			return "", errors.New("app token exchange failed")
 		}),
-		repoTokenSourceFunc(func(context.Context, string, string) (string, error) {
+		repoTokenSourceFunc(func(context.Context, string, string, string) (string, error) {
 			return "static-token", nil
 		}),
 	)
 
-	token, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	token, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() error = %v", err)
 	}
@@ -29,8 +29,8 @@ func TestFallbackTokenSourceUsesFallbackOnPrimaryFailure(t *testing.T) {
 	}
 }
 
-type repoTokenSourceFunc func(context.Context, string, string) (string, error)
+type repoTokenSourceFunc func(context.Context, string, string, string) (string, error)
 
-func (fn repoTokenSourceFunc) TokenForRepo(ctx context.Context, owner string, repo string) (string, error) {
-	return fn(ctx, owner, repo)
+func (fn repoTokenSourceFunc) TokenForRepo(ctx context.Context, owner string, repo string, operation string) (string, error) {
+	return fn(ctx, owner, repo, operation)
 }

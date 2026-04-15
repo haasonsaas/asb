@@ -62,3 +62,53 @@ func TestConnector_IssueReturnsAllowlistedProxyHandle(t *testing.T) {
 		t.Fatalf("resource_ref = %q, want github repo ref", issued.Metadata["resource_ref"])
 	}
 }
+
+func TestConnector_IssueDefaultsRemainReadOnly(t *testing.T) {
+	t.Parallel()
+
+	connector := github.NewConnector(github.Config{})
+	issued, err := connector.Issue(context.Background(), core.IssueRequest{
+		Session: &core.Session{ID: "sess_abc", TenantID: "t_acme"},
+		Grant: &core.Grant{
+			ID:           "gr_123",
+			DeliveryMode: core.DeliveryModeProxy,
+			ExpiresAt:    time.Date(2026, 3, 12, 20, 10, 0, 0, time.UTC),
+		},
+		Resource: core.ResourceDescriptor{
+			Kind: core.ResourceKindGitHubRepo,
+			Name: "acme/widgets",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Metadata["operations"] != "pull_request_metadata,pull_request_files,repository_metadata,repository_issues" {
+		t.Fatalf("operations = %q, want read-only defaults", issued.Metadata["operations"])
+	}
+}
+
+func TestConnector_IssueAllowsExplicitWriteOperations(t *testing.T) {
+	t.Parallel()
+
+	connector := github.NewConnector(github.Config{
+		AllowedOperations: []string{"repository_metadata", "create_issue", "create_check_run"},
+	})
+	issued, err := connector.Issue(context.Background(), core.IssueRequest{
+		Session: &core.Session{ID: "sess_abc", TenantID: "t_acme"},
+		Grant: &core.Grant{
+			ID:           "gr_123",
+			DeliveryMode: core.DeliveryModeProxy,
+			ExpiresAt:    time.Date(2026, 3, 12, 20, 10, 0, 0, time.UTC),
+		},
+		Resource: core.ResourceDescriptor{
+			Kind: core.ResourceKindGitHubRepo,
+			Name: "acme/widgets",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Metadata["operations"] != "repository_metadata,create_issue,create_check_run" {
+		t.Fatalf("operations = %q, want explicit write allowlist", issued.Metadata["operations"])
+	}
+}

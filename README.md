@@ -108,7 +108,15 @@ Implemented allowlisted operations:
 - `repository_metadata`
 - `repository_issues`
 
-The executor supports two token sources: a static token for development, or a GitHub App installation-token flow that caches repo-to-installation mappings and mints repo-scoped tokens with minimal permissions (`contents:read`, `issues:read`, `pull_requests:read`).
+Supported write operations when they are explicitly allowlisted on the issued proxy handle:
+
+- `create_issue`
+- `create_pull_request_comment`
+- `create_check_run`
+
+Default proxy handles stay read-only. Write operations are opt-in through connector configuration so a caller cannot escalate from a read-scoped handle to issue creation or status publishing.
+
+The executor supports two token sources: a static token for development, or a GitHub App installation-token flow that caches repo-to-installation mappings and mints repo-scoped tokens with minimal permissions. Installation tokens are cached per repository and permission scope, so read operations continue using `contents:read`, `issues:read`, `pull_requests:read`, while write operations request narrower elevated scopes such as `issues:write` or `checks:write` only for the operations that need them.
 
 ### Vault DB
 

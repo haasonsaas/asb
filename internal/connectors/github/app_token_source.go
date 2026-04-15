@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,12 +37,17 @@ type AppTokenSource struct {
 
 	mu                sync.Mutex
 	repoInstallations map[string]int64
-	installationCache map[int64]cachedInstallationToken
+	installationCache map[installationTokenCacheKey]cachedInstallationToken
 }
 
 type cachedInstallationToken struct {
 	token     string
 	expiresAt time.Time
+}
+
+type installationTokenCacheKey struct {
+	installationID    int64
+	permissionScopeID string
 }
 
 func NewAppTokenSource(cfg AppTokenSourceConfig) (*AppTokenSource, error) {
@@ -73,17 +79,20 @@ func NewAppTokenSource(cfg AppTokenSourceConfig) (*AppTokenSource, error) {
 		permissions:       cfg.Permissions,
 		now:               cfg.Now,
 		repoInstallations: make(map[string]int64),
-		installationCache: make(map[int64]cachedInstallationToken),
+		installationCache: make(map[installationTokenCacheKey]cachedInstallationToken),
 	}, nil
 }
 
-func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo string) (string, error) {
+func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo string, operation string) (string, error) {
 	repoKey := owner + "/" + repo
+	permissions := s.permissionsForOperation(operation)
+	permissionScopeID := permissionScopeKey(permissions)
 
 	s.mu.Lock()
 	installationID, ok := s.repoInstallations[repoKey]
 	if ok {
-		if cached, ok := s.installationCache[installationID]; ok && cached.expiresAt.After(s.now().Add(5*time.Minute)) {
+		cacheKey := installationTokenCacheKey{installationID: installationID, permissionScopeID: permissionScopeID}
+		if cached, ok := s.installationCache[cacheKey]; ok && cached.expiresAt.After(s.now().Add(5*time.Minute)) {
 			token := cached.token
 			s.mu.Unlock()
 			return token, nil
@@ -106,13 +115,13 @@ func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo st
 		s.mu.Unlock()
 	}
 
-	token, expiresAt, err := s.createInstallationToken(ctx, installationID, repo, appToken)
+	token, expiresAt, err := s.createInstallationToken(ctx, installationID, repo, permissions, appToken)
 	if err != nil {
 		return "", err
 	}
 
 	s.mu.Lock()
-	s.installationCache[installationID] = cachedInstallationToken{
+	s.installationCache[installationTokenCacheKey{installationID: installationID, permissionScopeID: permissionScopeID}] = cachedInstallationToken{
 		token:     token,
 		expiresAt: expiresAt,
 	}
@@ -166,10 +175,10 @@ func (s *AppTokenSource) lookupInstallationID(ctx context.Context, owner string,
 	return payload.ID, nil
 }
 
-func (s *AppTokenSource) createInstallationToken(ctx context.Context, installationID int64, repo string, appToken string) (string, time.Time, error) {
+func (s *AppTokenSource) createInstallationToken(ctx context.Context, installationID int64, repo string, permissions map[string]string, appToken string) (string, time.Time, error) {
 	requestBody, err := json.Marshal(map[string]any{
 		"repositories": []string{repo},
-		"permissions":  s.permissions,
+		"permissions":  permissions,
 	})
 	if err != nil {
 		return "", time.Time{}, err
@@ -204,4 +213,45 @@ func (s *AppTokenSource) createInstallationToken(ctx context.Context, installati
 		return "", time.Time{}, err
 	}
 	return payload.Token, payload.ExpiresAt, nil
+}
+
+func (s *AppTokenSource) permissionsForOperation(operation string) map[string]string {
+	if permissions, ok := operationPermissions[operation]; ok {
+		return clonePermissions(permissions)
+	}
+	return clonePermissions(s.permissions)
+}
+
+var operationPermissions = map[string]map[string]string{
+	"pull_request_metadata":       {"pull_requests": "read"},
+	"pull_request_files":          {"pull_requests": "read"},
+	"repository_metadata":         {"contents": "read"},
+	"repository_issues":           {"issues": "read"},
+	"create_issue":                {"issues": "write"},
+	"create_pull_request_comment": {"issues": "write"},
+	"create_check_run":            {"checks": "write"},
+}
+
+func clonePermissions(source map[string]string) map[string]string {
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func permissionScopeKey(permissions map[string]string) string {
+	if len(permissions) == 0 {
+		return "default"
+	}
+	keys := make([]string, 0, len(permissions))
+	for key := range permissions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+permissions[key])
+	}
+	return strings.Join(parts, ",")
 }

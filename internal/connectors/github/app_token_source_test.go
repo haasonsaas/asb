@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -59,7 +61,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 		t.Fatalf("NewAppTokenSource() error = %v", err)
 	}
 
-	token, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	token, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() error = %v", err)
 	}
@@ -67,7 +69,7 @@ func TestAppTokenSource_TokenForRepoUsesInstallationTokenAndCaches(t *testing.T)
 		t.Fatalf("token = %q, want inst-token", token)
 	}
 
-	cachedToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	cachedToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() cached error = %v", err)
 	}
@@ -120,12 +122,12 @@ func TestAppTokenSource_TokenForRepoRefreshesWhenTokenNearExpiry(t *testing.T) {
 		t.Fatalf("NewAppTokenSource() error = %v", err)
 	}
 
-	firstToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	firstToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() first error = %v", err)
 	}
 	currentTime = now.Add(2 * time.Minute)
-	secondToken, err := source.TokenForRepo(context.Background(), "acme", "widgets")
+	secondToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 	if err != nil {
 		t.Fatalf("TokenForRepo() second error = %v", err)
 	}
@@ -177,11 +179,92 @@ func TestAppTokenSource_ClassifiesGitHubErrors(t *testing.T) {
 				t.Fatalf("NewAppTokenSource() error = %v", err)
 			}
 
-			_, err = source.TokenForRepo(context.Background(), "acme", "widgets")
+			_, err = source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("TokenForRepo() error = %v, want %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestAppTokenSource_TokenForRepoCachesByPermissionScope(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	tokenRequests := 0
+	var requestedPermissions []map[string]string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/installation":
+			_, _ = w.Write([]byte(`{"id":987}`))
+		case "/app/installations/987/access_tokens":
+			tokenRequests++
+			body, readErr := io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Fatalf("ReadAll() error = %v", readErr)
+			}
+			var payload struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			if unmarshalErr := json.Unmarshal(body, &payload); unmarshalErr != nil {
+				t.Fatalf("Unmarshal() error = %v", unmarshalErr)
+			}
+			requestedPermissions = append(requestedPermissions, payload.Permissions)
+			_, _ = w.Write([]byte(`{"token":"inst-token-` + string(rune('0'+tokenRequests)) + `","expires_at":"` + now.Add(10*time.Minute).Format(time.RFC3339) + `"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	source, err := github.NewAppTokenSource(github.AppTokenSourceConfig{
+		AppID:      123,
+		PrivateKey: privateKey,
+		BaseURL:    server.URL,
+		Client:     server.Client(),
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource() error = %v", err)
+	}
+
+	readToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "repository_metadata")
+	if err != nil {
+		t.Fatalf("TokenForRepo() read error = %v", err)
+	}
+	writeToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "create_issue")
+	if err != nil {
+		t.Fatalf("TokenForRepo() write error = %v", err)
+	}
+	cachedWriteToken, err := source.TokenForRepo(context.Background(), "acme", "widgets", "create_issue")
+	if err != nil {
+		t.Fatalf("TokenForRepo() cached write error = %v", err)
+	}
+
+	if readToken == writeToken {
+		t.Fatalf("expected distinct tokens per permission scope, got %q", readToken)
+	}
+	if cachedWriteToken != writeToken {
+		t.Fatalf("cached write token = %q, want %q", cachedWriteToken, writeToken)
+	}
+	if tokenRequests != 2 {
+		t.Fatalf("token requests = %d, want 2", tokenRequests)
+	}
+	if len(requestedPermissions) != 2 {
+		t.Fatalf("requested permissions calls = %d, want 2", len(requestedPermissions))
+	}
+	if got := requestedPermissions[0]["contents"]; got != "read" {
+		t.Fatalf("first permissions contents = %q, want read", got)
+	}
+	if got := requestedPermissions[1]["issues"]; got != "write" {
+		t.Fatalf("second permissions issues = %q, want write", got)
 	}
 }
 

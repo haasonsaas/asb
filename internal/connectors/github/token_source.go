@@ -25,13 +25,13 @@ type fallbackTokenSource struct {
 	fallback RepoTokenSource
 }
 
-func (s fallbackTokenSource) TokenForRepo(ctx context.Context, owner string, repo string) (string, error) {
-	token, err := s.primary.TokenForRepo(ctx, owner, repo)
+func (s fallbackTokenSource) TokenForRepo(ctx context.Context, owner string, repo string, operation string) (string, error) {
+	token, err := s.primary.TokenForRepo(ctx, owner, repo, operation)
 	if err == nil {
 		return token, nil
 	}
 
-	fallbackToken, fallbackErr := s.fallback.TokenForRepo(ctx, owner, repo)
+	fallbackToken, fallbackErr := s.fallback.TokenForRepo(ctx, owner, repo, operation)
 	if fallbackErr != nil {
 		return "", fmt.Errorf("%w: primary token source failed: %v; fallback token source failed: %v", core.ErrUnauthorized, err, fallbackErr)
 	}
