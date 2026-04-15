@@ -132,6 +132,12 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 		cleanupRepository()
 		return nil, err
 	}
+	browserConnector, browserOrigin, err := newBrowserConnector()
+	if err != nil {
+		cleanupRuntime()
+		cleanupRepository()
+		return nil, err
+	}
 
 	tenantID := getenv("ASB_DEV_TENANT_ID", "t_dev")
 	mustRegisterToolAndPolicy(ctx, logger, tools, engine, tenantID, core.Tool{
@@ -154,25 +160,8 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 		Condition:            `request.tool == "github"`,
 	})
 
-	if origin := os.Getenv("ASB_BROWSER_ORIGIN"); origin != "" {
-		username := os.Getenv("ASB_BROWSER_USERNAME")
-		password := os.Getenv("ASB_BROWSER_PASSWORD")
-		userSelector := getenv("ASB_BROWSER_SELECTOR_USERNAME", "#username")
-		passSelector := getenv("ASB_BROWSER_SELECTOR_PASSWORD", "#password")
-		connectorOptions = append(connectorOptions, resolver.WithBrowser(browserconnector.NewConnector(browserconnector.Config{
-			Credentials: browserconnector.StaticCredentialStore(map[string]browserconnector.Credential{
-				origin: {
-					Username: username,
-					Password: password,
-				},
-			}),
-			SelectorMaps: map[string]browserconnector.SelectorMap{
-				origin: {
-					Username: userSelector,
-					Password: passSelector,
-				},
-			},
-		})))
+	if browserConnector != nil {
+		connectorOptions = append(connectorOptions, resolver.WithBrowser(browserConnector))
 		mustRegisterToolAndPolicy(ctx, logger, tools, engine, tenantID, core.Tool{
 			TenantID:             tenantID,
 			Tool:                 "browser",
@@ -190,7 +179,7 @@ func NewServiceRuntime(ctx context.Context, logger *slog.Logger, options ...Serv
 			MaxTTL:               5 * time.Minute,
 			ApprovalMode:         core.ApprovalModeLiveHuman,
 			RequiredToolTags:     []string{"trusted", "browser"},
-			Condition:            `request.origin == "` + origin + `" && session.tool_context.exists(t, t == "browser")`,
+			Condition:            `request.origin == "` + browserOrigin + `" && session.tool_context.exists(t, t == "browser")`,
 		})
 	}
 
@@ -519,6 +508,54 @@ func newApprovalNotifier() (core.ApprovalNotifier, error) {
 		Channel:       channel,
 		PublicBaseURL: publicBaseURL,
 	})
+}
+
+func newBrowserConnector() (*browserconnector.Connector, string, error) {
+	origin := strings.TrimSpace(os.Getenv("ASB_BROWSER_ORIGIN"))
+	username := strings.TrimSpace(os.Getenv("ASB_BROWSER_USERNAME"))
+	password := os.Getenv("ASB_BROWSER_PASSWORD")
+	userSelector := strings.TrimSpace(os.Getenv("ASB_BROWSER_SELECTOR_USERNAME"))
+	passSelector := strings.TrimSpace(os.Getenv("ASB_BROWSER_SELECTOR_PASSWORD"))
+	allowInsecureLocalhostRaw := strings.TrimSpace(os.Getenv("ASB_BROWSER_ALLOW_INSECURE_LOCALHOST"))
+
+	if origin == "" {
+		if username != "" || password != "" || userSelector != "" || passSelector != "" || allowInsecureLocalhostRaw != "" {
+			return nil, "", fmt.Errorf("ASB_BROWSER_ORIGIN is required when browser connector demo credentials are configured")
+		}
+		return nil, "", nil
+	}
+	if userSelector == "" || passSelector == "" {
+		return nil, "", fmt.Errorf("ASB_BROWSER_SELECTOR_USERNAME and ASB_BROWSER_SELECTOR_PASSWORD are required when ASB_BROWSER_ORIGIN is set")
+	}
+
+	allowInsecureLocalhost := false
+	if allowInsecureLocalhostRaw != "" {
+		parsed, err := strconv.ParseBool(allowInsecureLocalhostRaw)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse ASB_BROWSER_ALLOW_INSECURE_LOCALHOST: %w", err)
+		}
+		allowInsecureLocalhost = parsed
+	}
+
+	connector, err := browserconnector.NewConnector(browserconnector.Config{
+		Credentials: browserconnector.StaticCredentialStore(map[string]browserconnector.Credential{
+			origin: {
+				Username: username,
+				Password: password,
+			},
+		}),
+		SelectorMaps: map[string]browserconnector.SelectorMap{
+			origin: {
+				Username: userSelector,
+				Password: passSelector,
+			},
+		},
+		AllowInsecureLocalhost: allowInsecureLocalhost,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return connector, origin, nil
 }
 
 func newRepository(ctx context.Context) (core.Repository, func(), readinessProbe, func() sql.DBStats, error) {
