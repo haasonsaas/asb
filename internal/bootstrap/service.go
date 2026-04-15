@@ -385,6 +385,10 @@ func newDelegationValidator() (core.DelegationValidator, error) {
 
 func newGitHubProxyExecutor() (core.GitHubProxyExecutor, error) {
 	var tokenSource githubconnector.RepoTokenSource
+	var staticTokenSource githubconnector.RepoTokenSource
+	if token := os.Getenv("ASB_GITHUB_TOKEN"); token != "" {
+		staticTokenSource = githubconnector.StaticTokenSource(token)
+	}
 
 	if appIDRaw := os.Getenv("ASB_GITHUB_APP_ID"); appIDRaw != "" && os.Getenv("ASB_GITHUB_APP_PRIVATE_KEY_FILE") != "" {
 		appID, err := strconv.ParseInt(appIDRaw, 10, 64)
@@ -410,8 +414,9 @@ func newGitHubProxyExecutor() (core.GitHubProxyExecutor, error) {
 		if err != nil {
 			return nil, err
 		}
-	} else if token := os.Getenv("ASB_GITHUB_TOKEN"); token != "" {
-		tokenSource = githubconnector.StaticTokenSource(token)
+		tokenSource = githubconnector.FallbackTokenSource(tokenSource, staticTokenSource)
+	} else if staticTokenSource != nil {
+		tokenSource = staticTokenSource
 	}
 
 	if tokenSource == nil {
