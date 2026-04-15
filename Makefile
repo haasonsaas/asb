@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: fmt test vet proto proto-check migrate run-api run-worker
+.PHONY: fmt test vet lint install-hooks proto proto-check migrate run-api run-worker
 
 fmt:
 	$(GO) fmt ./...
@@ -10,6 +10,8 @@ test:
 
 vet:
 	$(GO) vet ./...
+
+lint: vet
 
 proto:
 	bash scripts/sync-proto.sh
@@ -25,3 +27,8 @@ run-api:
 
 run-worker:
 	$(GO) run ./cmd/asb-worker
+
+install-hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed"
