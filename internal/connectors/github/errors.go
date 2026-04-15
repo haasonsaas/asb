@@ -17,7 +17,7 @@ func classifyGitHubAPIError(response *http.Response, body []byte, action string)
 	switch {
 	case response.StatusCode == http.StatusUnauthorized:
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrUnauthorized, action, response.StatusCode, message)
-	case response.StatusCode == http.StatusTooManyRequests || response.Header.Get("Retry-After") != "" || response.Header.Get("X-RateLimit-Remaining") == "0":
+	case isGitHubRateLimitResponse(response):
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrRateLimited, action, response.StatusCode, message)
 	case response.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrNotFound, action, response.StatusCode, message)
@@ -25,5 +25,16 @@ func classifyGitHubAPIError(response *http.Response, body []byte, action string)
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrUnavailable, action, response.StatusCode, message)
 	default:
 		return fmt.Errorf("%w: %s returned %d: %s", core.ErrForbidden, action, response.StatusCode, message)
+	}
+}
+
+func isGitHubRateLimitResponse(response *http.Response) bool {
+	switch response.StatusCode {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return response.Header.Get("Retry-After") != "" || response.Header.Get("X-RateLimit-Remaining") == "0"
+	default:
+		return false
 	}
 }
