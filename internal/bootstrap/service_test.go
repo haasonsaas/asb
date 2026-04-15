@@ -107,6 +107,89 @@ func TestNewVerifierRequiresCompleteOIDCConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewBrowserConnectorDisabledByDefault(t *testing.T) {
+	t.Setenv("ASB_BROWSER_ORIGIN", "")
+	t.Setenv("ASB_BROWSER_USERNAME", "")
+	t.Setenv("ASB_BROWSER_PASSWORD", "")
+	t.Setenv("ASB_BROWSER_SELECTOR_USERNAME", "")
+	t.Setenv("ASB_BROWSER_SELECTOR_PASSWORD", "")
+	t.Setenv("ASB_BROWSER_ALLOW_INSECURE_LOCALHOST", "")
+
+	connector, origin, err := newBrowserConnector()
+	if err != nil {
+		t.Fatalf("newBrowserConnector() error = %v", err)
+	}
+	if connector != nil || origin != "" {
+		t.Fatalf("newBrowserConnector() = (%#v, %q), want disabled browser connector", connector, origin)
+	}
+}
+
+func TestNewBrowserConnectorRequiresSelectors(t *testing.T) {
+	t.Setenv("ASB_BROWSER_ORIGIN", "https://admin.vendor.example")
+	t.Setenv("ASB_BROWSER_USERNAME", "admin")
+	t.Setenv("ASB_BROWSER_PASSWORD", "secret")
+	t.Setenv("ASB_BROWSER_SELECTOR_USERNAME", "")
+	t.Setenv("ASB_BROWSER_SELECTOR_PASSWORD", "")
+
+	connector, _, err := newBrowserConnector()
+	if err == nil || !strings.Contains(err.Error(), "ASB_BROWSER_SELECTOR_USERNAME") {
+		t.Fatalf("newBrowserConnector() error = %v, want selector requirement error", err)
+	}
+	if connector != nil {
+		t.Fatalf("newBrowserConnector() = %#v, want nil", connector)
+	}
+}
+
+func TestNewBrowserConnectorRejectsInsecureOriginByDefault(t *testing.T) {
+	t.Setenv("ASB_BROWSER_ORIGIN", "http://localhost:3000")
+	t.Setenv("ASB_BROWSER_USERNAME", "admin")
+	t.Setenv("ASB_BROWSER_PASSWORD", "secret")
+	t.Setenv("ASB_BROWSER_SELECTOR_USERNAME", "#username")
+	t.Setenv("ASB_BROWSER_SELECTOR_PASSWORD", "#password")
+	t.Setenv("ASB_BROWSER_ALLOW_INSECURE_LOCALHOST", "")
+
+	connector, _, err := newBrowserConnector()
+	if err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("newBrowserConnector() error = %v, want https enforcement error", err)
+	}
+	if connector != nil {
+		t.Fatalf("newBrowserConnector() = %#v, want nil", connector)
+	}
+}
+
+func TestNewBrowserConnectorAllowsExplicitLocalhostOverride(t *testing.T) {
+	t.Setenv("ASB_BROWSER_ORIGIN", "http://localhost:3000")
+	t.Setenv("ASB_BROWSER_USERNAME", "admin")
+	t.Setenv("ASB_BROWSER_PASSWORD", "secret")
+	t.Setenv("ASB_BROWSER_SELECTOR_USERNAME", "#username")
+	t.Setenv("ASB_BROWSER_SELECTOR_PASSWORD", "#password")
+	t.Setenv("ASB_BROWSER_ALLOW_INSECURE_LOCALHOST", "true")
+
+	connector, origin, err := newBrowserConnector()
+	if err != nil {
+		t.Fatalf("newBrowserConnector() error = %v", err)
+	}
+	if connector == nil || origin != "http://localhost:3000" {
+		t.Fatalf("newBrowserConnector() = (%#v, %q), want configured localhost connector", connector, origin)
+	}
+}
+
+func TestNewBrowserConnectorRejectsInvalidSelector(t *testing.T) {
+	t.Setenv("ASB_BROWSER_ORIGIN", "https://admin.vendor.example")
+	t.Setenv("ASB_BROWSER_USERNAME", "admin")
+	t.Setenv("ASB_BROWSER_PASSWORD", "secret")
+	t.Setenv("ASB_BROWSER_SELECTOR_USERNAME", "input[")
+	t.Setenv("ASB_BROWSER_SELECTOR_PASSWORD", "#password")
+
+	connector, _, err := newBrowserConnector()
+	if err == nil || !strings.Contains(err.Error(), "invalid browser username selector") {
+		t.Fatalf("newBrowserConnector() error = %v, want selector validation error", err)
+	}
+	if connector != nil {
+		t.Fatalf("newBrowserConnector() = %#v, want nil", connector)
+	}
+}
+
 func writeEd25519PublicKeyFile(t *testing.T, dir, name string) string {
 	t.Helper()
 

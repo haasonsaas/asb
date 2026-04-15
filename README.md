@@ -124,11 +124,19 @@ The Vault DB connector brokers short-lived Postgres credentials through HashiCor
 
 The browser connector returns wrapped credential artifacts with explicit field-level fill instructions.
 
-- validates exact origin URLs
-- requires a selector map per origin (CSS selectors for each credential field)
+- validates exact origin URLs and requires `https://` by default
+- allows `http://localhost[:port]` only when `ASB_BROWSER_ALLOW_INSECURE_LOCALHOST=true`
+- requires an explicit selector map per origin (CSS selectors for each credential field)
+- validates selector syntax at startup so malformed CSS fails before the broker serves traffic
 - unwrap returns explicit field selector/value pairs only — the broker never returns a general browser credential blob
 - single-use unwrap enforced at the artifact level
 - never auto-submits
+
+Browser extension/runtime contract for the current relay flow:
+
+- the browser runtime registers a relay session with tenant, public key, origin, tab id, and selectors
+- ASB returns a relay session id plus expiry metadata
+- artifact unwrap returns only explicit selector/value pairs for the approved origin and tab, never a raw reusable credential bundle
 
 ### Connector resolution
 
@@ -270,11 +278,12 @@ Configure at least one attestation verifier:
 | `ASB_VAULT_ROLE` | Vault DB role name |
 | `ASB_VAULT_ALLOWED_ROLE_SUFFIXES` | Comma-separated allowed Vault DB role suffixes (default `_ro`) |
 | `ASB_VAULT_DSN_TEMPLATE` | DSN template for rendered credentials |
-| `ASB_BROWSER_ORIGIN` | Allowed browser origin (demo) |
+| `ASB_BROWSER_ORIGIN` | Allowed browser origin (demo); must use `https://` unless localhost override is enabled |
 | `ASB_BROWSER_USERNAME` | Browser credential username (demo) |
 | `ASB_BROWSER_PASSWORD` | Browser credential password (demo) |
-| `ASB_BROWSER_SELECTOR_USERNAME` | CSS selector for username field (demo) |
-| `ASB_BROWSER_SELECTOR_PASSWORD` | CSS selector for password field (demo) |
+| `ASB_BROWSER_SELECTOR_USERNAME` | Required CSS selector for username field when browser demo config is enabled |
+| `ASB_BROWSER_SELECTOR_PASSWORD` | Required CSS selector for password field when browser demo config is enabled |
+| `ASB_BROWSER_ALLOW_INSECURE_LOCALHOST` | Allow `http://localhost[:port]` for browser demo config in local development |
 | `ASB_NOTIFICATIONS_BASE_URL` | Shared notifications service base URL for pending approval delivery |
 | `ASB_NOTIFICATIONS_RECIPIENT_ID` | Recipient or queue ID for approval notifications |
 | `ASB_NOTIFICATIONS_CHANNEL` | Delivery channel for approval notifications (`slack`, `email`, `webhook`, `in_app`) |
