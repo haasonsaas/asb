@@ -219,10 +219,14 @@ func connectError(err error) error {
 		code = connect.CodeInvalidArgument
 	case errors.Is(err, core.ErrUnauthorized):
 		code = connect.CodeUnauthenticated
+	case errors.Is(err, core.ErrRateLimited):
+		code = connect.CodeResourceExhausted
 	case errors.Is(err, core.ErrForbidden):
 		code = connect.CodePermissionDenied
 	case errors.Is(err, core.ErrNotFound):
 		code = connect.CodeNotFound
+	case errors.Is(err, core.ErrUnavailable):
+		code = connect.CodeUnavailable
 	case errors.Is(err, core.ErrResourceBudgetExceeded):
 		code = connect.CodeResourceExhausted
 	}

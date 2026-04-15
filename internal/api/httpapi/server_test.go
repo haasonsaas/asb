@@ -381,6 +381,30 @@ func TestServer_RegisterBrowserRelayAndUnwrap(t *testing.T) {
 	}
 }
 
+func TestServer_ExecuteGitHubProxyRateLimited(t *testing.T) {
+	t.Parallel()
+
+	svc := &stubService{
+		executeGitHubProxy: func(context.Context, *core.ExecuteGitHubProxyRequest) (*core.ExecuteGitHubProxyResponse, error) {
+			return nil, core.ErrRateLimited
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/github/rest", bytes.NewBufferString(`{
+		"proxy_handle":"ph_456",
+		"operation":"repository_metadata",
+		"params":{}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	httpapi.NewServer(svc).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
+	}
+}
+
 type stubService struct {
 	createSession        func(context.Context, *core.CreateSessionRequest) (*core.CreateSessionResponse, error)
 	requestGrant         func(context.Context, *core.RequestGrantRequest) (*core.RequestGrantResponse, error)

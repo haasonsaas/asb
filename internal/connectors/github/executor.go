@@ -76,13 +76,15 @@ func (e *HTTPExecutor) Execute(ctx context.Context, artifact *core.Artifact, ope
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
 	}
 	if response.StatusCode >= 400 {
-		return nil, fmt.Errorf("%w: github api returned %d: %s", core.ErrForbidden, response.StatusCode, string(body))
+		return nil, classifyGitHubAPIError(response, body, "github api request")
 	}
 	return body, nil
 }

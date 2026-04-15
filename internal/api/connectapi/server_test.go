@@ -80,6 +80,33 @@ func TestServer_CreateSessionAndExecuteProxy(t *testing.T) {
 	}
 }
 
+func TestServer_ExecuteProxyUnavailableMapsToConnectUnavailable(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	path, handler := connectapi.NewHandler(&stubService{
+		executeGitHubProxy: func(context.Context, *core.ExecuteGitHubProxyRequest) (*core.ExecuteGitHubProxyResponse, error) {
+			return nil, core.ErrUnavailable
+		},
+	})
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := asbv1connect.NewBrokerServiceClient(server.Client(), server.URL)
+	_, err := client.ExecuteGitHubProxy(context.Background(), connect.NewRequest(&asbv1.ExecuteGitHubProxyRequest{
+		ProxyHandle: "ph_456",
+		Operation:   "repository_metadata",
+	}))
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		t.Fatalf("error = %v, want connect error", err)
+	}
+	if connectErr.Code() != connect.CodeUnavailable {
+		t.Fatalf("connect code = %v, want %v", connectErr.Code(), connect.CodeUnavailable)
+	}
+}
+
 func TestServer_MapsCoreErrorsToConnectCodes(t *testing.T) {
 	t.Parallel()
 

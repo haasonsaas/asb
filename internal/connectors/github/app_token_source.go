@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/evalops/asb/internal/core"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type AppTokenSourceConfig struct {
@@ -83,7 +83,7 @@ func (s *AppTokenSource) TokenForRepo(ctx context.Context, owner string, repo st
 	s.mu.Lock()
 	installationID, ok := s.repoInstallations[repoKey]
 	if ok {
-		if cached, ok := s.installationCache[installationID]; ok && cached.expiresAt.After(s.now().Add(1*time.Minute)) {
+		if cached, ok := s.installationCache[installationID]; ok && cached.expiresAt.After(s.now().Add(5*time.Minute)) {
 			token := cached.token
 			s.mu.Unlock()
 			return token, nil
@@ -147,13 +147,15 @@ func (s *AppTokenSource) lookupInstallationID(ctx context.Context, owner string,
 	if err != nil {
 		return 0, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return 0, err
 	}
 	if response.StatusCode >= 400 {
-		return 0, fmt.Errorf("%w: lookup GitHub installation returned %d: %s", core.ErrForbidden, response.StatusCode, string(body))
+		return 0, classifyGitHubAPIError(response, body, "lookup GitHub installation")
 	}
 	var payload struct {
 		ID int64 `json:"id"`
@@ -184,13 +186,15 @@ func (s *AppTokenSource) createInstallationToken(ctx context.Context, installati
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	if response.StatusCode >= 400 {
-		return "", time.Time{}, fmt.Errorf("%w: create GitHub installation token returned %d: %s", core.ErrForbidden, response.StatusCode, string(body))
+		return "", time.Time{}, classifyGitHubAPIError(response, body, "create GitHub installation token")
 	}
 	var payload struct {
 		Token     string    `json:"token"`
