@@ -73,7 +73,7 @@ func (v *Verifier) Verify(ctx context.Context, in *core.Attestation) (*core.Work
 		Type:       core.WorkloadIdentityTypeOIDC,
 		Issuer:     issuer,
 		Subject:    subject,
-		Audience:   claimAudience(claims["aud"], v.audience),
+		Audience:   v.audience,
 		Attributes: map[string]string{},
 	}
 	copyStringClaim(identity.Attributes, claims, "actor")
@@ -99,26 +99,6 @@ func hasAllowedSubjectPrefix(subject string, prefixes []string) bool {
 		}
 	}
 	return false
-}
-
-func claimAudience(value any, fallback string) string {
-	switch audience := value.(type) {
-	case string:
-		if trimmed := strings.TrimSpace(audience); trimmed != "" {
-			return trimmed
-		}
-	case []string:
-		if len(audience) > 0 && strings.TrimSpace(audience[0]) != "" {
-			return strings.TrimSpace(audience[0])
-		}
-	case []any:
-		for _, candidate := range audience {
-			if text, ok := candidate.(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text)
-			}
-		}
-	}
-	return fallback
 }
 
 func copyStringClaim(attributes map[string]string, claims jwt.MapClaims, key string) {

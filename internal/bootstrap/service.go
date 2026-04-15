@@ -365,7 +365,7 @@ func newVerifier(require bool) (core.AttestationVerifier, error) {
 		verifier, err := oidc.NewVerifier(oidc.Config{
 			Issuer:                 oidcIssuer,
 			Audience:               getenv("ASB_OIDC_AUDIENCE", "asb-control-plane"),
-			AllowedSubjectPrefixes: splitCommaSeparatedEnv("ASB_OIDC_ALLOWED_SUBJECT_PREFIXES"),
+			AllowedSubjectPrefixes: csvEnvOr("ASB_OIDC_ALLOWED_SUBJECT_PREFIXES", nil),
 			Keyfunc: func(context.Context, *jwt.Token) (any, error) {
 				return publicKey, nil
 			},
@@ -657,24 +657,6 @@ func getenv(key string, fallback string) string {
 	return fallback
 }
 
-func splitCommaSeparatedEnv(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			values = append(values, trimmed)
-		}
-	}
-	if len(values) == 0 {
-		return nil
-	}
-	return values
-}
-
 func csvEnvOr(key string, fallback []string) []string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -714,7 +696,6 @@ func newVaultDBConnector() (*vaultdb.Connector, error) {
 		},
 	})
 }
-
 func mustRegisterToolAndPolicy(ctx context.Context, logger *slog.Logger, tools *toolregistry.Registry, engine *policy.Engine, tenantID string, tool core.Tool, pol core.Policy) {
 	if err := tools.Put(ctx, tool); err != nil {
 		logger.Error("register tool", "tenant_id", tenantID, "tool", tool.Tool, "error", err)

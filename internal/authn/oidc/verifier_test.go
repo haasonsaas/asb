@@ -112,3 +112,46 @@ func TestVerifier_RejectsUnexpectedSubjectPrefix(t *testing.T) {
 		t.Fatal("Verify() error = nil, want non-nil")
 	}
 }
+
+func TestVerifier_StoresValidatedAudienceForMultiAudienceTokens(t *testing.T) {
+	t.Parallel()
+
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+		"iss": "https://token.actions.githubusercontent.com",
+		"sub": "repo:evalops/asb:ref:refs/heads/main",
+		"aud": []string{"some-other-audience", "asb-control-plane"},
+		"exp": time.Now().Add(5 * time.Minute).Unix(),
+	})
+	raw, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("SignedString() error = %v", err)
+	}
+
+	verifier, err := oidc.NewVerifier(oidc.Config{
+		Issuer:                 "https://token.actions.githubusercontent.com",
+		Audience:               "asb-control-plane",
+		AllowedSubjectPrefixes: []string{"repo:evalops/"},
+		Keyfunc: func(context.Context, *jwt.Token) (any, error) {
+			return publicKey, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier() error = %v", err)
+	}
+
+	identity, err := verifier.Verify(context.Background(), &core.Attestation{
+		Kind:  core.AttestationKindOIDCJWT,
+		Token: raw,
+	})
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if identity.Audience != "asb-control-plane" {
+		t.Fatalf("Audience = %q, want asb-control-plane", identity.Audience)
+	}
+}
