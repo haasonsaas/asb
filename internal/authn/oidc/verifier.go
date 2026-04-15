@@ -89,9 +89,6 @@ func (v *Verifier) Verify(ctx context.Context, in *core.Attestation) (*core.Work
 	copyStringClaim(identity.Attributes, claims, "workflow")
 	copyNumericClaim(identity.Attributes, claims, "run_attempt")
 	copyNumericClaim(identity.Attributes, claims, "run_id")
-	if len(identity.Attributes) == 0 {
-		identity.Attributes = map[string]string{}
-	}
 	return identity, nil
 }
 
