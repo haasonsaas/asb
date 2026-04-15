@@ -1,0 +1,10 @@
+# Default owners for everything in this repo
+* @evalops/platform-team
+
+# Infrastructure and deployment changes require SRE review
+Dockerfile @evalops/sre-team @evalops/platform-team
+*.yml @evalops/platform-team
+.github/ @evalops/sre-team @evalops/platform-team
+
+# Proto/API contract changes require API team review
+*.proto @evalops/api-team @evalops/platform-team
