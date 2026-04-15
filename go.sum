@@ -17,8 +17,8 @@ github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/r
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
 github.com/evalops/proto v0.0.0-20260414193513-3db7075bd55b h1:lc1B3iZgerJlkQRiLTcUtCadb1zCB6d941snfxhMkxM=
 github.com/evalops/proto v0.0.0-20260414193513-3db7075bd55b/go.mod h1:EXB8IcqMaV58Tt0w2GaQia3YOwzrEvnIWFZetHX+IxE=
-github.com/evalops/service-runtime v0.1.36 h1:MwkHHh9TemQe+CIHPrFPrrOxqAdtxJTr/QAjRtFEgBU=
-github.com/evalops/service-runtime v0.1.36/go.mod h1:slYEbsp+qsfQAK/vjXml9J2k+6N2I96FT435l7dLvRE=
+github.com/evalops/service-runtime v0.1.42 h1:2Xe3FxzjcH7k6DuNkcDgc4e5xqGSZ5zYdEQDSb8PzRo=
+github.com/evalops/service-runtime v0.1.42/go.mod h1:slYEbsp+qsfQAK/vjXml9J2k+6N2I96FT435l7dLvRE=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/go-chi/chi/v5 v5.2.5 h1:Eg4myHZBjyvJmAFjFvWgrqDTXFyOzjj7YIm3L3mu6Ug=
