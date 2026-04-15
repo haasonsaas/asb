@@ -573,6 +573,93 @@ func TestService_RevokeSessionRevokesOutstandingGrants(t *testing.T) {
 	}
 }
 
+func TestService_RequestGrantRejectsRevokedSessionToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := testNow()
+	repo := memstore.NewRepository()
+	runtime := memstore.NewRuntimeStore()
+	tools := toolregistry.New()
+	engine := policy.NewEngine()
+	signer := mustNewSigner(t)
+
+	mustPutTool(t, ctx, tools, core.Tool{
+		TenantID:             "t_acme",
+		Tool:                 "github",
+		ManifestHash:         "sha256:test",
+		RuntimeClass:         core.RuntimeClassHosted,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeProxy},
+		AllowedCapabilities:  []string{"repo.read"},
+		TrustTags:            []string{"trusted", "github"},
+	})
+	mustPutPolicy(t, engine, core.Policy{
+		TenantID:             "t_acme",
+		Capability:           "repo.read",
+		ResourceKind:         core.ResourceKindGitHubRepo,
+		AllowedDeliveryModes: []core.DeliveryMode{core.DeliveryModeProxy},
+		DefaultTTL:           10 * time.Minute,
+		MaxTTL:               10 * time.Minute,
+		ApprovalMode:         core.ApprovalModeNone,
+		RequiredToolTags:     []string{"trusted", "github"},
+		Condition:            `request.tool == "github"`,
+	})
+
+	svc, err := app.NewService(app.Config{
+		Clock:         fixedClock(now),
+		IDs:           fixedIDs("sess_revoked"),
+		Repository:    repo,
+		Runtime:       runtime,
+		Verifier:      fakeVerifier{identity: workloadIdentity()},
+		SessionTokens: signer,
+		Policy:        engine,
+		Tools:         tools,
+		Connectors:    fakeConnectorResolver{connector: &fakeConnector{kind: "github"}},
+		Deliveries: map[core.DeliveryMode]core.DeliveryAdapter{
+			core.DeliveryModeProxy: &fakeDeliveryAdapter{
+				mode: core.DeliveryModeProxy,
+				delivery: &core.Delivery{
+					Kind:   core.DeliveryKindProxyHandle,
+					Handle: "ph_revoked",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	sessionResp, err := svc.CreateSession(ctx, &core.CreateSessionRequest{
+		TenantID:    "t_acme",
+		AgentID:     "agent_pr_reviewer",
+		RunID:       "run_revoked",
+		ToolContext: []string{"github"},
+		Attestation: &core.Attestation{Kind: core.AttestationKindK8SServiceAccountJWT, Token: "jwt"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	claims, err := signer.Verify(sessionResp.SessionToken)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if err := runtime.RevokeSessionToken(ctx, claims.TokenID, claims.ExpiresAt); err != nil {
+		t.Fatalf("RevokeSessionToken() error = %v", err)
+	}
+
+	_, err = svc.RequestGrant(ctx, &core.RequestGrantRequest{
+		SessionToken: sessionResp.SessionToken,
+		Tool:         "github",
+		Capability:   "repo.read",
+		ResourceRef:  "github:repo:acme/widgets",
+		DeliveryMode: core.DeliveryModeProxy,
+	})
+	if err == nil || !strings.Contains(err.Error(), "session token revoked") {
+		t.Fatalf("RequestGrant() error = %v, want revoked token failure", err)
+	}
+}
+
 func mustNewSigner(t *testing.T) core.SessionTokenManager {
 	t.Helper()
 

@@ -403,18 +403,22 @@ func (v multiVerifier) Verify(ctx context.Context, in *core.Attestation) (*core.
 }
 
 func newSessionTokenManager() (core.SessionTokenManager, error) {
+	options := []sessionjwt.Option{}
+	if issuer := strings.TrimSpace(os.Getenv("ASB_SESSION_TOKEN_ISSUER")); issuer != "" {
+		options = append(options, sessionjwt.WithIssuer(issuer))
+	}
 	if path := os.Getenv("ASB_SESSION_SIGNING_PRIVATE_KEY_FILE"); path != "" {
 		privateKey, err := loadEd25519PrivateKey(path)
 		if err != nil {
 			return nil, err
 		}
-		return sessionjwt.NewManager(privateKey)
+		return sessionjwt.NewManager(privateKey, options...)
 	}
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	return sessionjwt.NewManager(privateKey)
+	return sessionjwt.NewManager(privateKey, options...)
 }
 
 func newDelegationValidator() (core.DelegationValidator, error) {

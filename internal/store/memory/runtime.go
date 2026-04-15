@@ -11,17 +11,19 @@ import (
 )
 
 type RuntimeStore struct {
-	mu      sync.RWMutex
-	budgets map[string]*proxybudget.BudgetTracker
-	relays  map[string]*core.BrowserRelaySession
-	expires map[string]time.Time
+	mu               sync.RWMutex
+	budgets          map[string]*proxybudget.BudgetTracker
+	relays           map[string]*core.BrowserRelaySession
+	expires          map[string]time.Time
+	tokenRevocations map[string]time.Time
 }
 
 func NewRuntimeStore() *RuntimeStore {
 	return &RuntimeStore{
-		budgets: make(map[string]*proxybudget.BudgetTracker),
-		relays:  make(map[string]*core.BrowserRelaySession),
-		expires: make(map[string]time.Time),
+		budgets:          make(map[string]*proxybudget.BudgetTracker),
+		relays:           make(map[string]*core.BrowserRelaySession),
+		expires:          make(map[string]time.Time),
+		tokenRevocations: make(map[string]time.Time),
 	}
 }
 
@@ -94,4 +96,35 @@ func (s *RuntimeStore) GetRelaySession(_ context.Context, sessionID string) (*co
 		}
 	}
 	return &cp, nil
+}
+
+func (s *RuntimeStore) RevokeSessionToken(_ context.Context, tokenID string, expiresAt time.Time) error {
+	if tokenID == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tokenRevocations[tokenID] = expiresAt
+	return nil
+}
+
+func (s *RuntimeStore) IsSessionTokenRevoked(_ context.Context, tokenID string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	expiresAt, ok := s.tokenRevocations[tokenID]
+	if !ok {
+		return false, nil
+	}
+	if !expiresAt.IsZero() && time.Now().After(expiresAt) {
+		delete(s.tokenRevocations, tokenID)
+		return false, nil
+	}
+	return true, nil
 }

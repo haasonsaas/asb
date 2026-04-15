@@ -173,12 +173,45 @@ func (s *RuntimeStore) GetRelaySession(ctx context.Context, sessionID string) (*
 	}, nil
 }
 
+func (s *RuntimeStore) RevokeSessionToken(ctx context.Context, tokenID string, expiresAt time.Time) error {
+	if tokenID == "" {
+		return nil
+	}
+
+	key := revokedSessionTokenKey(tokenID)
+	if err := s.client.Set(ctx, key, "1", 0).Err(); err != nil {
+		return err
+	}
+	if !expiresAt.IsZero() {
+		if err := s.client.ExpireAt(ctx, key, expiresAt).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *RuntimeStore) IsSessionTokenRevoked(ctx context.Context, tokenID string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+
+	exists, err := s.client.Exists(ctx, revokedSessionTokenKey(tokenID)).Result()
+	if err != nil {
+		return false, err
+	}
+	return exists > 0, nil
+}
+
 func proxyKey(handle string) string {
 	return "proxy:" + handle
 }
 
 func relayKey(sessionID string) string {
 	return "relay:" + sessionID
+}
+
+func revokedSessionTokenKey(tokenID string) string {
+	return "session_token_revoked:" + tokenID
 }
 
 func parseRedisInt(value any) int {

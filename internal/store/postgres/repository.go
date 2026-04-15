@@ -77,15 +77,16 @@ func (r *Repository) SaveSession(ctx context.Context, session *core.Session) err
 		return err
 	}
 	_, err = r.db.Exec(ctx, `
-		INSERT INTO sessions (id, tenant_id, workload_id, delegation_id, agent_id, run_id, tool_context_json, workload_hash, state, expires_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO sessions (id, tenant_id, workload_id, delegation_id, agent_id, run_id, token_id, tool_context_json, workload_hash, state, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (id) DO UPDATE SET
 			delegation_id = EXCLUDED.delegation_id,
+			token_id = EXCLUDED.token_id,
 			tool_context_json = EXCLUDED.tool_context_json,
 			workload_hash = EXCLUDED.workload_hash,
 			state = EXCLUDED.state,
 			expires_at = EXCLUDED.expires_at
-	`, session.ID, session.TenantID, workloadID, delegationID, session.AgentID, session.RunID, toolContextJSON, session.WorkloadHash, string(session.State), session.ExpiresAt, session.CreatedAt)
+	`, session.ID, session.TenantID, workloadID, delegationID, session.AgentID, session.RunID, session.TokenID, toolContextJSON, session.WorkloadHash, string(session.State), session.ExpiresAt, session.CreatedAt)
 	return err
 }
 
@@ -106,7 +107,7 @@ func (r *Repository) GetSession(ctx context.Context, sessionID string) (*core.Se
 
 	err := r.db.QueryRow(ctx, `
 		SELECT
-			s.id, s.tenant_id, s.agent_id, s.run_id, s.tool_context_json, s.workload_hash, s.state, s.expires_at, s.created_at,
+			s.id, s.tenant_id, s.agent_id, s.run_id, s.token_id, s.tool_context_json, s.workload_hash, s.state, s.expires_at, s.created_at,
 			w.identity_type, w.subject, w.issuer, w.metadata_json,
 			d.id, d.issuer, d.subject, d.claims_json, d.expires_at
 		FROM sessions s
@@ -114,7 +115,7 @@ func (r *Repository) GetSession(ctx context.Context, sessionID string) (*core.Se
 		LEFT JOIN delegations d ON d.id = s.delegation_id
 		WHERE s.id = $1
 	`, sessionID).Scan(
-		&session.ID, &session.TenantID, &session.AgentID, &session.RunID, &toolContextJSON, &session.WorkloadHash, &session.State, &session.ExpiresAt, &session.CreatedAt,
+		&session.ID, &session.TenantID, &session.AgentID, &session.RunID, &session.TokenID, &toolContextJSON, &session.WorkloadHash, &session.State, &session.ExpiresAt, &session.CreatedAt,
 		&workloadType, &workloadSubject, &workloadIssuer, &workloadJSON,
 		&delegationID, &delegationIssuer, &delegationSubject, &delegationClaimsJSON, &delegationExpiresAt,
 	)

@@ -133,6 +133,7 @@ type Session struct {
 	TenantID         string
 	AgentID          string
 	RunID            string
+	TokenID          string
 	WorkloadIdentity WorkloadIdentity
 	Delegation       *Delegation
 	ToolContext      []string
@@ -395,6 +396,7 @@ type SessionClaims struct {
 	TenantID     string
 	AgentID      string
 	RunID        string
+	TokenID      string
 	ToolContext  []string
 	WorkloadHash string
 	ExpiresAt    time.Time
@@ -504,6 +506,8 @@ type RuntimeStore interface {
 	CompleteProxyRequest(ctx context.Context, handle string, responseBytes int64) error
 	SaveRelaySession(ctx context.Context, relay *BrowserRelaySession) error
 	GetRelaySession(ctx context.Context, sessionID string) (*BrowserRelaySession, error)
+	RevokeSessionToken(ctx context.Context, tokenID string, expiresAt time.Time) error
+	IsSessionTokenRevoked(ctx context.Context, tokenID string) (bool, error)
 }
 
 type GitHubProxyExecutor interface {

@@ -52,4 +52,15 @@ func TestRuntimeStore_ProxyBudgetsAndRelaySessions(t *testing.T) {
 	if got.KeyID != "key_1" || got.Selectors["username"] != "#username" {
 		t.Fatalf("relay = %#v, want saved relay session", got)
 	}
+
+	if err := store.RevokeSessionToken(context.Background(), "tok_123", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("RevokeSessionToken() error = %v", err)
+	}
+	revoked, err := store.IsSessionTokenRevoked(context.Background(), "tok_123")
+	if err != nil {
+		t.Fatalf("IsSessionTokenRevoked() error = %v", err)
+	}
+	if !revoked {
+		t.Fatal("IsSessionTokenRevoked() = false, want true")
+	}
 }

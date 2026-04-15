@@ -131,6 +131,7 @@ func (s *Service) CreateSession(ctx context.Context, req *core.CreateSessionRequ
 		State:            core.SessionStateActive,
 		CreatedAt:        now,
 	}
+	session.TokenID = "tok_" + session.ID
 	if err := s.repo.SaveSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("create session %q: save session: %w", session.ID, err)
 	}
@@ -446,6 +447,11 @@ func (s *Service) RevokeSession(ctx context.Context, req *core.RevokeSessionRequ
 		return fmt.Errorf("revoke session %q: save session: %w", session.ID, err)
 	}
 	s.metrics.recordSessionTransition(previousState, session.State, session.TenantID)
+	if s.runtime != nil && session.TokenID != "" {
+		if err := s.runtime.RevokeSessionToken(ctx, session.TokenID, session.ExpiresAt); err != nil {
+			return fmt.Errorf("revoke session %q: revoke session token %q: %w", session.ID, session.TokenID, err)
+		}
+	}
 
 	grants, err := s.repo.ListGrantsBySession(ctx, req.SessionID)
 	if err != nil {
@@ -835,6 +841,15 @@ func (s *Service) loadActiveSession(ctx context.Context, raw string) (*core.Sess
 	claims, err := s.sessionTokens.Verify(raw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load active session: verify session token: %w", err)
+	}
+	if s.runtime != nil && claims.TokenID != "" {
+		revoked, err := s.runtime.IsSessionTokenRevoked(ctx, claims.TokenID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load active session: check session token revocation: %w", err)
+		}
+		if revoked {
+			return nil, nil, fmt.Errorf("%w: session token revoked", core.ErrForbidden)
+		}
 	}
 	session, err := s.repo.GetSession(ctx, claims.SessionID)
 	if err != nil {
