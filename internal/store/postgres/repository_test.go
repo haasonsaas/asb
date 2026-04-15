@@ -110,3 +110,41 @@ func TestRepository_UseArtifactMarksSingleUse(t *testing.T) {
 		t.Fatalf("artifact state = %q, want %q", artifact.State, core.ArtifactStateUsed)
 	}
 }
+
+func TestRepository_ListGrantsBySessionIsBounded(t *testing.T) {
+	t.Parallel()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error = %v", err)
+	}
+	defer mock.Close()
+
+	repo := postgres.NewRepository(mock)
+	createdAt := time.Date(2026, 4, 15, 18, 0, 0, 0, time.UTC)
+	expiresAt := createdAt.Add(30 * time.Minute)
+
+	mock.ExpectQuery("SELECT id, tenant_id, session_id, tool, capability, resource_ref, delivery_mode, connector_kind, approval_id, artifact_ref, state, requested_ttl_seconds, effective_ttl_seconds, expires_at, created_at, reason\\s+FROM grants\\s+WHERE session_id = \\$1\\s+ORDER BY created_at ASC, id ASC\\s+LIMIT \\$2").
+		WithArgs("sess_abc", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "tenant_id", "session_id", "tool", "capability", "resource_ref", "delivery_mode", "connector_kind", "approval_id", "artifact_ref", "state", "requested_ttl_seconds", "effective_ttl_seconds", "expires_at", "created_at", "reason",
+		}).AddRow(
+			"gr_123", "t_acme", "sess_abc", "github", "repo.read", "repo:evalops/asb", "direct", "github", nil, nil,
+			string(core.GrantStateIssued), int32(300), int32(300), expiresAt, createdAt, "cleanup",
+		))
+
+	grants, err := repo.ListGrantsBySession(context.Background(), "sess_abc")
+	if err != nil {
+		t.Fatalf("ListGrantsBySession() error = %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("len(grants) = %d, want 1", len(grants))
+	}
+	if grants[0].ID != "gr_123" {
+		t.Fatalf("grant id = %q, want %q", grants[0].ID, "gr_123")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet() error = %v", err)
+	}
+}

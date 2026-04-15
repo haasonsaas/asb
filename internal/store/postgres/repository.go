@@ -137,12 +137,16 @@ func (r *Repository) GetSession(ctx context.Context, sessionID string) (*core.Se
 	return &session, nil
 }
 
+const maxGrantsBySessionLookup = 10000
+
 func (r *Repository) ListGrantsBySession(ctx context.Context, sessionID string) ([]*core.Grant, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, tenant_id, session_id, tool, capability, resource_ref, delivery_mode, connector_kind, approval_id, artifact_ref, state, requested_ttl_seconds, effective_ttl_seconds, expires_at, created_at, reason
 		FROM grants
 		WHERE session_id = $1
-	`, sessionID)
+		ORDER BY created_at ASC, id ASC
+		LIMIT $2
+	`, sessionID, maxGrantsBySessionLookup)
 	if err != nil {
 		return nil, err
 	}
