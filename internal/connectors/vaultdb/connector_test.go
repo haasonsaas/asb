@@ -2,6 +2,7 @@ package vaultdb_test
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,20 @@ func TestNewConnectorRejectsUnsafeDSNTemplates(t *testing.T) {
 	}
 }
 
+func TestNewConnectorRejectsRolesOutsideAllowedSuffixes(t *testing.T) {
+	t.Parallel()
+
+	_, err := vaultdb.NewConnector(vaultdb.Config{
+		AllowedRoleSuffixes: []string{"_ro"},
+		RoleDSNs: map[string]string{
+			"analytics_readonly": "postgres://{{username}}:{{password}}@db.internal/app",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "allowed suffixes") {
+		t.Fatalf("NewConnector() error = %v, want allowed suffix validation error", err)
+	}
+}
+
 func TestConnectorHonorsConfiguredRoleSuffixes(t *testing.T) {
 	t.Parallel()
 
@@ -126,6 +141,58 @@ func TestConnectorHonorsConfiguredRoleSuffixes(t *testing.T) {
 		},
 	}); err == nil || !strings.Contains(err.Error(), "allowed suffixes") {
 		t.Fatalf("Issue() error = %v, want suffix validation error", err)
+	}
+}
+
+func TestConnectorIssueEscapesUserinfoWithPercentEncoding(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeVaultClient{
+		lease: &vaultdb.LeaseCredentials{
+			Username:      "vault user",
+			Password:      "vault secret",
+			LeaseID:       "database/creds/analytics_ro/spacey",
+			LeaseDuration: 10 * time.Minute,
+		},
+	}
+	connector, err := vaultdb.NewConnector(vaultdb.Config{
+		Client: client,
+		RoleDSNs: map[string]string{
+			"analytics_ro": "postgres://{{username}}:{{password}}@db.internal:5432/analytics",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	issued, err := connector.Issue(context.Background(), core.IssueRequest{
+		Session: &core.Session{ID: "sess_db", TenantID: "t_acme"},
+		Grant: &core.Grant{
+			ID:           "gr_db",
+			DeliveryMode: core.DeliveryModeWrappedSecret,
+		},
+		Resource: core.ResourceDescriptor{
+			Kind: core.ResourceKindDBRole,
+			Name: "analytics_ro",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if strings.Contains(issued.SecretData["dsn"], "+") {
+		t.Fatalf("dsn = %q, want spaces percent-encoded in userinfo", issued.SecretData["dsn"])
+	}
+
+	parsed, err := url.Parse(issued.SecretData["dsn"])
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	password, ok := parsed.User.Password()
+	if !ok {
+		t.Fatalf("parsed dsn = %q, want password present", issued.SecretData["dsn"])
+	}
+	if parsed.User.Username() != client.lease.Username || password != client.lease.Password {
+		t.Fatalf("parsed credentials = %q/%q, want %q/%q", parsed.User.Username(), password, client.lease.Username, client.lease.Password)
 	}
 }
 

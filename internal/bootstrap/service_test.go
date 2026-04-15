@@ -94,3 +94,18 @@ func TestNewVaultDBConnectorFailsForInvalidTemplates(t *testing.T) {
 		t.Fatalf("newVaultDBConnector() = %#v, want nil", connector)
 	}
 }
+
+func TestNewVaultDBConnectorFailsForDisallowedRole(t *testing.T) {
+	t.Setenv("ASB_VAULT_ADDR", "https://vault.internal")
+	t.Setenv("ASB_VAULT_DSN_TEMPLATE", "postgres://{{username}}:{{password}}@db.internal/app")
+	t.Setenv("ASB_VAULT_ROLE", "analytics_readonly")
+	t.Setenv("ASB_VAULT_ALLOWED_ROLE_SUFFIXES", "_ro")
+
+	connector, err := newVaultDBConnector()
+	if err == nil || !strings.Contains(err.Error(), "allowed suffixes") {
+		t.Fatalf("newVaultDBConnector() error = %v, want allowed suffix validation error", err)
+	}
+	if connector != nil {
+		t.Fatalf("newVaultDBConnector() = %#v, want nil", connector)
+	}
+}

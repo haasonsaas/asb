@@ -40,8 +40,14 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	allowedRoleSuffixes := normalizeRoleSuffixes(cfg.AllowedRoleSuffixes)
+	for role := range roleDSNs {
+		if !roleHasAllowedSuffix(role, allowedRoleSuffixes) {
+			return nil, fmt.Errorf("%w: db role %q must match one of the allowed suffixes %v", core.ErrInvalidRequest, role, allowedRoleSuffixes)
+		}
+	}
 	return &Connector{
-		allowedRoleSuffixes: normalizeRoleSuffixes(cfg.AllowedRoleSuffixes),
+		allowedRoleSuffixes: allowedRoleSuffixes,
 		client:              cfg.Client,
 		roleDSNs:            roleDSNs,
 	}, nil
@@ -157,7 +163,11 @@ func (c *Connector) validateRole(kind core.ResourceKind, role string) error {
 }
 
 func (c *Connector) allowedRole(role string) bool {
-	for _, suffix := range c.allowedRoleSuffixes {
+	return roleHasAllowedSuffix(role, c.allowedRoleSuffixes)
+}
+
+func roleHasAllowedSuffix(role string, allowedRoleSuffixes []string) bool {
+	for _, suffix := range allowedRoleSuffixes {
 		if strings.HasSuffix(role, suffix) {
 			return true
 		}
@@ -185,8 +195,8 @@ func renderDSN(renderPattern string, lease *LeaseCredentials) (string, error) {
 	}
 	var builder strings.Builder
 	if err := tpl.Execute(&builder, map[string]string{
-		"username": url.QueryEscape(lease.Username),
-		"password": url.QueryEscape(lease.Password),
+		"username": url.PathEscape(lease.Username),
+		"password": url.PathEscape(lease.Password),
 	}); err != nil {
 		return "", fmt.Errorf("%w: render dsn template: %v", core.ErrInvalidRequest, err)
 	}
