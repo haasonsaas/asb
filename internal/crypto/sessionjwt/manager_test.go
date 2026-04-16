@@ -257,7 +257,20 @@ func TestManagerVerifyRejectsTamperedToken(t *testing.T) {
 		t.Fatalf("SignedString() error = %v", err)
 	}
 
-	tampered := raw[:len(raw)-1] + "A"
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected jwt token, got %q", raw)
+	}
+	signature := []byte(parts[2])
+	if len(signature) == 0 {
+		t.Fatalf("expected signature segment, got %q", raw)
+	}
+	if signature[0] == 'A' {
+		signature[0] = 'B'
+	} else {
+		signature[0] = 'A'
+	}
+	tampered := strings.Join([]string{parts[0], parts[1], string(signature)}, ".")
 	if _, err := manager.Verify(tampered); err == nil {
 		t.Fatal("Verify() error = nil, want tampered token failure")
 	}
