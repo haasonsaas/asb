@@ -2,6 +2,9 @@ package oidc
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"fmt"
 	"strconv"
 	"strings"
@@ -51,7 +54,14 @@ func (v *Verifier) Verify(ctx context.Context, in *core.Attestation) (*core.Work
 
 	claims := jwt.MapClaims{}
 	parsed, err := jwt.ParseWithClaims(in.Token, claims, func(token *jwt.Token) (any, error) {
-		return v.keyfunc(ctx, token)
+		key, err := v.keyfunc(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+		if err := ensureSupportedSigningMethod(token, key); err != nil {
+			return nil, err
+		}
+		return key, nil
 	}, jwt.WithIssuer(v.issuer), jwt.WithAudience(v.audience))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", core.ErrUnauthorized, err)
@@ -140,4 +150,23 @@ func copyNumericClaim(attributes map[string]string, claims jwt.MapClaims, key st
 			attributes[key] = strings.TrimSpace(value)
 		}
 	}
+}
+
+func ensureSupportedSigningMethod(token *jwt.Token, key any) error {
+	switch key.(type) {
+	case ed25519.PublicKey:
+		if token.Method == jwt.SigningMethodEdDSA {
+			return nil
+		}
+	case *rsa.PublicKey:
+		switch token.Method.(type) {
+		case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS:
+			return nil
+		}
+	case *ecdsa.PublicKey:
+		if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: unexpected signing method %q", core.ErrUnauthorized, token.Method.Alg())
 }
